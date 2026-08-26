@@ -1,0 +1,6 @@
+{
+  "name": "Advance Licence Management System",
+  "description": "Internal enterprise Advance Licence Management System for Alok Industries Export & Logistics department",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
