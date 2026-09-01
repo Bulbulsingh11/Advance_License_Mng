@@ -71,6 +71,99 @@ export interface AdvanceLicence {
   applicantName: string;
 }
 
+// ============================================================================
+// EXPORT TRANSACTIONS & SHIPPING BILLS MODULE TYPES
+// ============================================================================
+
+export type CurrencyCode = 'USD' | 'EUR' | 'GBP' | 'INR' | 'AED' | 'JPY' | 'CAD' | 'SGD';
+
+export interface ShippingBillItem {
+  id: string;
+  shippingBillId: string;
+  itemSrNo: string;
+  itcHsCode: string;
+  productDescription: string;
+  quantity: number;
+  uom: string;
+  fobValueCurrency: CurrencyCode;
+  fobValueFc: number;         // NUMERIC(18, 4)
+  exchangeRate: number;       // NUMERIC(18, 4)
+  fobValueInr: number;        // NUMERIC(18, 4)
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type BrcStatus = 'Not Received' | 'Received' | 'Realized';
+
+export interface BrcTracking {
+  id: string;
+  shippingBillId: string;
+  brcNumber?: string;
+  brcStatus: BrcStatus;
+  receivedDate?: string;
+  realizedDate?: string;
+  realizedAmountFc?: number;   // NUMERIC(18, 4)
+  realizedAmountInr?: number;  // NUMERIC(18, 4)
+  currency: CurrencyCode;
+  realizedExchangeRate?: number;
+  bankName?: string;
+  bankBranch?: string;
+  ifscCode?: string;
+  adCode?: string;
+  eBrcDocumentNumber?: string;
+  remarks?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ShippingBill {
+  id: string;
+  licenceId: string;
+  licenceNumber: string;
+  companyFileNumber: string;
+  shippingBillNumber: string;
+  shippingBillDate: string;
+  portOfExport: string;          // e.g. INNSA1 (Nhava Sheva)
+  portCode?: string;
+  leoDate?: string;              // Let Export Order Date
+  destinationCountry: string;
+  buyerName?: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  currency: CurrencyCode;
+  exchangeRate: number;          // NUMERIC(18, 4)
+  totalFobFc: number;            // NUMERIC(18, 4)
+  totalFobInr: number;           // NUMERIC(18, 4)
+  status: 'Draft' | 'Submitted' | 'LEO Issued' | 'Exported' | 'Closed';
+  remarks?: string;
+  
+  // Relations
+  items?: ShippingBillItem[];
+  brcTracking?: BrcTracking;
+
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ExportObligationTracking {
+  id: string;
+  licenceId: string;
+  licenceNumber: string;
+  companyFileNumber: string;
+  totalExportObligationFobInr: number;
+  totalExportObligationFobFc: number;
+  currency: CurrencyCode;
+  realizedFobInr: number;
+  realizedFobFc: number;
+  unrealizedFobInr: number;
+  fulfilledPercent: number;     // e.g. 74.52%
+  status: 'Not Started' | 'In Progress' | 'Partially Fulfilled' | 'Fully Realized' | 'Over Fulfilled';
+  shippingBillsCount: number;
+  realizedBillsCount: number;
+  lastCalculatedAt: string;
+}
+
 export type ModuleId = 
   | 'dashboard'
   | 'licences'
@@ -97,3 +190,449 @@ export interface UserProfile {
   location: string;
   avatarInitials: string;
 }
+
+export interface PaginationMeta {
+  currentPage: number;
+  totalPages: number;
+  totalRecords: number;
+  limit: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+export interface ShippingBillQueryParams {
+  page?: number;
+  limit?: number | 'all';
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  dateFrom?: string;
+  dateTo?: string;
+  licenceId?: string | string[];
+  brcStatus?: string | string[];
+  fobMinUSD?: number;
+  fobMaxUSD?: number;
+  fobMinINR?: number;
+  fobMaxINR?: number;
+  searchText?: string;
+}
+
+export interface ShippingBillsResponse {
+  bills: ShippingBill[];
+  pagination?: PaginationMeta;
+  source: string;
+  isDb: boolean;
+  queryTimeMs?: number;
+}
+
+// ============================================================================
+// PHASE 4: UTILIZATION DASHBOARD MODULE TYPES
+// ============================================================================
+
+export type UtilizationStatus = 'Optimal' | 'Under-Utilized' | 'Over-Utilized' | 'Expired';
+export type TrendType = 'Accelerating' | 'Stable' | 'Declining' | 'Stalled';
+export type AlertSeverity = 'Critical' | 'Warning' | 'Info';
+export type AlertType = 'Under-Utilized' | 'Over-Utilized' | 'Expiry Warning' | 'No Activity';
+export type AlertStatus = 'Active' | 'Resolved' | 'Dismissed';
+
+export interface UtilizationAlert {
+  id: string;
+  licenceId: string;
+  licenceNumber?: string;
+  companyFileNumber?: string;
+  alertType: AlertType;
+  alertSeverity: AlertSeverity;
+  triggeredDate: string;
+  thresholdValue?: number;
+  currentValue?: number;
+  status: AlertStatus;
+  resolvedDate?: string | null;
+  resolutionNotes?: string | null;
+  message?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface UtilizationSnapshot {
+  id: string;
+  licenceId: string;
+  licenceNumber?: string;
+  snapshotDate: string;
+  totalLicenceValue: number;
+  totalExportedValue: number;
+  utilizationPercent: number;
+  status: UtilizationStatus;
+  daysRemaining: number;
+  forecastCompletionDate?: string | null;
+  avgMonthlyExport: number;
+  trend: TrendType;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface UtilizationMetrics {
+  licenceId: string;
+  licenceNumber: string;
+  companyFileNumber: string;
+  licenceStatus: string;
+  totalAuthorizedFOB: number;
+  totalExportedFOB: number;
+  remainingQuota: number;
+  utilizationPercent: number;
+  status: UtilizationStatus;
+  daysRemaining: number;
+  licenceExpiry: string;
+  licenceDate?: string;
+  forecastCompletionDate?: string | null;
+  avgMonthlyExport: number;
+  trend: TrendType;
+  historySparkline: number[];       // 7-day or recent utilization percentages for sparkline
+  shippingBillsCount: number;
+  alerts: UtilizationAlert[];
+  currency: CurrencyCode;
+  lastExportDate?: string | null;
+  overshootAmount?: number;
+  buyerNames?: string[];
+  productDescriptions?: string[];
+}
+
+export interface UtilizationDashboardSummary {
+  inComplianceCount: number;
+  atRiskCount: number;
+  activeAlertsCount: number;
+  criticalAlertsCount: number;
+  warningAlertsCount: number;
+  infoAlertsCount: number;
+  expiringSoonCount: number;
+  totalLicencesCount: number;
+  expiringSoonLicences: Array<{
+    id: string;
+    licenceNumber: string;
+    companyFileNumber?: string;
+    daysRemaining: number;
+    expiryDate: string;
+    utilizationPercent: number;
+  }>;
+  totalAuthorizedFobSum: number;
+  totalExportedFobSum: number;
+  overallUtilizationPercent: number;
+}
+
+export interface UtilizationQueryParams {
+  status?: UtilizationStatus | 'All';
+  licenceStatus?: string;
+  daysRemainingMax?: number;
+  sortBy?: 'utilization_percent' | 'days_remaining' | 'licence_number' | 'fob_value' | 'trend';
+  sortOrder?: 'asc' | 'desc';
+  searchText?: string;
+  page?: number;
+  limit?: number | 'all';
+}
+
+export interface UtilizationDashboardResponse {
+  success: boolean;
+  source: string;
+  summary: UtilizationDashboardSummary;
+  data: UtilizationMetrics[];
+  pagination: PaginationMeta;
+  queryTimeMs?: number;
+}
+
+export interface SimulationResult {
+  currentFOB: number;
+  additionalFOB: number;
+  projectedExportedFOB: number;
+  authorizedFOB: number;
+  currentUtilization: number;
+  projectedUtilization: number;
+  currentDaysRemaining: number;
+  projectedCompletionDate: string | null;
+  avgMonthlyExport: number;
+  newStatus: UtilizationStatus;
+  isOverUtilized: boolean;
+  projectedOvershoot: number;
+}
+
+// ============================================================================
+// PHASE 2: IMPORT TRANSACTIONS & INBOUND LOGISTICS MODULE TYPES
+// ============================================================================
+
+export type ImportDocumentStatus = 'Filed' | 'Cleared' | 'Rejected';
+export type GrnStatus = 'Received' | 'Inspected' | 'Quarantined' | 'Approved';
+
+export interface ConsumptionTracking {
+  id: string;
+  importLineItemId: string;
+  licenceId?: string;
+  consumptionDate: string;
+  quantityConsumed: number;              // Material quantity consumed (in UOM)
+  productionBatchId?: string;           // Batch Reference (e.g. "BATCH-2026-081")
+  finishedGoodProducedQty?: number;      // Output yield produced (in SION ratio)
+  finishedGoodId?: string;              // Output product name or ID
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GoodsReceiptNote {
+  id: string;
+  importBillId: string;
+  grnNumber: string;                    // e.g. "GRN-2026-00123"
+  receiptDate: string;
+  warehouseLocation: string;            // e.g. "Warehouse A, Bay 4"
+  receivedBy?: string;
+  inspectedBy?: string;
+  quantityChecked: number;              // Inspected quantity
+  damageNoted?: string;
+  status: GrnStatus;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ImportLineItem {
+  id: string;
+  importBillId: string;
+  hsCode: string;                       // Harmonized Tariff Code
+  materialDescription: string;          // Material Description (e.g. "Additive MB")
+  materialId?: string;                  // Product Master Link
+  quantityReceived: number;             // Received Quantity (e.g. 500 Kgs)
+  uom: string;                          // 'Kgs', 'MTR', 'Liters', 'Nos'
+  unitPriceFc: number;                  // FC price per unit
+  totalLineValueFc: number;             // Total foreign currency value
+  totalLineValueInr: number;            // Total INR value
+  sionNormId?: string;                  // SION Norm Code / ID
+  expectedOutputQty?: number;           // Expected finished goods yield (e.g. 600 Kgs)
+  expectedOutputUom?: string;           // Finished good UOM
+  notes?: string;
+  consumptionTracking?: ConsumptionTracking[];
+  
+  // Computed aggregations
+  totalConsumedQty?: number;
+  remainingInventoryQty?: number;
+  consumedPercent?: number;
+  actualOutputProducedQty?: number;
+  sionVariance?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ImportDocument {
+  id: string;
+  licenceId: string;
+  licenceNumber?: string;
+  companyFileNumber?: string;
+  importBillNumber: string;             // e.g. "BoE-AUTO-12345-26" or "5482910"
+  docDate: string;                      // Filing date
+  customsPort: string;                  // e.g. "NHAVA SHEVA", "BANGALORE AIR"
+  importerName?: string;
+  supplierCountry: string;              // Origin Country
+  supplierName: string;                 // Foreign Vendor
+  supplierInvoiceNo?: string;
+  customsDutyPercent?: number;          // e.g. 7.5%
+  customsDutyAmount?: number;           // Calculated customs duty
+  igstPercent?: number;                 // e.g. 18.0%
+  igstAmount?: number;                  // Calculated IGST
+  totalInvoiceValueFc: number;          // FC Value
+  totalInvoiceValueInr: number;         // INR Value
+  importCurrency: CurrencyCode;         // 'USD', 'EUR', 'GBP', 'INR'
+  exchangeRate: number;                 // Exchange rate used
+  boeStatus: ImportDocumentStatus;      // 'Filed', 'Cleared', 'Rejected'
+  customsClearanceDate?: string;
+  notes?: string;
+  
+  // Relations
+  lineItems?: ImportLineItem[];
+  grn?: GoodsReceiptNote;
+  
+  // Computed stats
+  totalItemsCount?: number;
+  totalReceivedQty?: number;
+  totalConsumedQty?: number;
+  totalRemainingQty?: number;
+  grnStatus?: GrnStatus;
+  
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ImportQueryParams {
+  page?: number;
+  limit?: number | 'all';
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  dateFrom?: string;
+  dateTo?: string;
+  licenceId?: string | string[];
+  boeStatus?: ImportDocumentStatus | string[];
+  grnStatus?: GrnStatus | string[];
+  supplierCountry?: string;
+  supplierName?: string;
+  searchText?: string;
+}
+
+export interface ImportDocumentsResponse {
+  success: boolean;
+  source: string;
+  data: ImportDocument[];
+  pagination: PaginationMeta;
+  summary?: {
+    totalDocumentsCount: number;
+    clearedDocumentsCount: number;
+    pendingFiledCount: number;
+    rejectedCount: number;
+    totalImportValueInr: number;
+    totalImportValueFc: number;
+    totalQuantityImported: number;
+    totalQuantityConsumed: number;
+    totalInventoryRemaining: number;
+    totalDutySaved: number;
+  };
+  queryTimeMs?: number;
+}
+
+export interface LicenceImportConsumptionStatus {
+  licenceId: string;
+  licenceNumber: string;
+  companyFileNumber: string;
+  authorizedCifInr: number;
+  importedCifInr: number;
+  remainingCifInr: number;
+  importUtilizationPercent: number;
+  totalImportDocsCount: number;
+  lineItems: Array<{
+    materialDescription: string;
+    hsCode: string;
+    quantityReceived: number;
+    quantityConsumed: number;
+    inventoryRemaining: number;
+    uom: string;
+    expectedOutputQty: number;
+    actualOutputProducedQty: number;
+    sionNormId?: string;
+  }>;
+}
+
+// ============================================================================
+// PHASE 1: MATERIALS, FINISHED GOODS & SION NORMS MODULE TYPES
+// ============================================================================
+
+export type MaterialType = 'Chemical' | 'Component' | 'Consumable' | 'Catalyst' | 'Other';
+
+export interface MaterialSpecification {
+  id: string;
+  rawMaterialId?: string;
+  specificationName: string;
+  specificationValue: string;
+  specificationUnit?: string;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SionNormSummary {
+  id: string;
+  sionCode: string;
+  finishedGoodId: string;
+  finishedGoodName?: string;
+  finishedGoodCode?: string;
+  rawMaterialId: string;
+  rawMaterialName?: string;
+  rawMaterialCode?: string;
+  inputQuantity: number;
+  inputUom: string;
+  outputQuantity: number;
+  outputUom: string;
+  yieldRatio: number;
+  wastagePercent: number;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  dgftNotificationDate?: string | null;
+  status?: 'Active' | 'Expired' | 'Upcoming';
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface RawMaterial {
+  id: string;
+  materialCode: string;
+  materialName: string;
+  hsCode: string;
+  hsDescription?: string;
+  materialType: MaterialType;
+  uom: string;
+  cifValuePerUnit: number;
+  importCurrency: CurrencyCode;
+  isScomet: boolean;
+  scometCategory?: string;
+  scometControlReason?: string;
+  description?: string;
+  notes?: string;
+  specifications?: MaterialSpecification[];
+  sionNorms?: SionNormSummary[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface FinishedGood {
+  id: string;
+  productCode: string;
+  productName: string;
+  hsCode: string;
+  hsDescription?: string;
+  uom: string;
+  description?: string;
+  isExportObligationItem: boolean;
+  notes?: string;
+  sionNorms?: SionNormSummary[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SionNorm {
+  id: string;
+  sionCode: string;
+  rawMaterialId: string;
+  rawMaterialName?: string;
+  rawMaterialCode?: string;
+  rawMaterialHsCode?: string;
+  finishedGoodId: string;
+  finishedGoodName?: string;
+  finishedGoodCode?: string;
+  finishedGoodHsCode?: string;
+  inputQuantity: number;
+  inputUom: string;
+  outputQuantity: number;
+  outputUom: string;
+  yieldRatio: number;
+  wastagePercent: number;
+  dgftNotificationDate?: string | null;
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  status?: 'Active' | 'Expired' | 'Upcoming';
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface HsCodeItem {
+  id: string;
+  hsCode: string;
+  description: string;
+  itemType: 'Import' | 'Export' | 'Both';
+  gstRate: number;
+  notes?: string;
+}
+
+export interface MaterialsSummaryMetrics {
+  totalMaterials: number;
+  totalProducts: number;
+  activeSionNorms: number;
+  scometItemsCount: number;
+  chemicalsCount: number;
+  componentsCount: number;
+  consumablesCount: number;
+  catalystsCount: number;
+}
+
+
+

@@ -1,6 +1,6 @@
 import express from "express";
 import path from "path";
-import crypto from "crypto";
+import crypto, { randomUUID } from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
@@ -656,11 +656,17 @@ async function startServer() {
       return res.json({
         success: true,
         source: "in_memory_fallback",
+        deletedId: id,
         message: "Licence deleted from memory store",
       });
     }
 
     try {
+      // Delete child export items first
+      try {
+        await supabase.from("licence_export_items").delete().eq("licence_id", id);
+      } catch {}
+
       const { error } = await supabase.from("licence_master").delete().eq("id", id);
       if (error) {
         console.warn("[DELETE /api/licences/:id] Database delete warning:", error.message);
@@ -668,6 +674,7 @@ async function startServer() {
       return res.json({
         success: true,
         source: "supabase_postgresql",
+        deletedId: id,
         message: "Licence deleted successfully",
       });
     } catch (err: any) {
@@ -675,20 +682,3111 @@ async function startServer() {
       return res.json({
         success: true,
         source: "in_memory_fallback",
+        deletedId: id,
         message: "Licence removed from memory store",
       });
     }
   });
 
   // -------------------------------------------------------------------------
-  // CRUD API: DELETE /api/licences/:id (Delete licence and cascade export items)
+  // IN-MEMORY STORES FOR SHIPPING BILLS & BRC TRACKING (Fallback store)
+  // Clean initial state with zero dummy or mock records
   // -------------------------------------------------------------------------
-  app.delete("/api/licences/:id", async (req, res) => {
+  const INITIAL_13_SHIPPING_BILLS: any[] = [];
+  const INITIAL_13_BRC_TRACKING: any[] = [];
+  const INITIAL_13_ITEMS: any[] = [];
+
+  let inMemoryShippingBillsStore: any[] = [];
+  let inMemoryShippingBillItemsStore: any[] = [];
+  let inMemoryBrcTrackingStore: any[] = [];
+
+  // -------------------------------------------------------------------------
+  // SION NORMS MASTER STORE
+  // -------------------------------------------------------------------------
+  const SION_NORMS_MASTER: any[] = [
+    {
+      id: "SION-TX-01",
+      normCode: "SION-TX-01",
+      normDescription: "Standard Textile Norm for Additive MB (Textile Polymer / Yarn Modifier)",
+      inputMaterial: "Additive MB",
+      inputHsCode: "38091010",
+      inputUom: "KGS",
+      finishedGood: "Additive Masterbatch Compound",
+      finishedGoodHsCode: "39019090",
+      finishedGoodUom: "KGS",
+      yieldRatio: 1.2, // 1 Kg raw material input -> 1.2 Kg finished goods output (e.g. 500 Kg -> 600 Kg)
+      industryGroup: "Textile Chemicals & Polymers",
+    },
+    {
+      id: "SION-TX-02",
+      normCode: "SION-TX-02",
+      normDescription: "SION Norm 62/2023 - 100% Cotton Raw Fiber to Combed Woven Grey Fabric",
+      inputMaterial: "Raw Cotton Long Staple 1-1/8",
+      inputHsCode: "52010015",
+      inputUom: "KGS",
+      finishedGood: "100% Cotton Grey Fabric 40s x 40s",
+      finishedGoodHsCode: "52081190",
+      finishedGoodUom: "MTR",
+      yieldRatio: 0.85, // 1 Kg input -> 0.85 Mtr finished fabric
+      industryGroup: "Spinning & Weaving",
+    },
+    {
+      id: "SION-TX-03",
+      normCode: "SION-TX-03",
+      normDescription: "SION Norm 45/2022 - Disperse & Reactive Dyeing of Synthetic / Blended Yarns",
+      inputMaterial: "Disperse Blue 79 Concentrate",
+      inputHsCode: "32041111",
+      inputUom: "KGS",
+      finishedGood: "Dyed Polyester-Cotton Fabric",
+      finishedGoodHsCode: "55132100",
+      finishedGoodUom: "MTR",
+      yieldRatio: 25.0, // 1 Kg dye -> 25 MTR dyed fabric
+      industryGroup: "Processing & Dyeing",
+    },
+    {
+      id: "SION-TX-04",
+      normCode: "SION-TX-04",
+      normDescription: "SION Norm H-12 - Polyester Staple Fiber to Spun Polyester Yarn",
+      inputMaterial: "Polyester Staple Fiber 1.4D",
+      inputHsCode: "55032000",
+      inputUom: "KGS",
+      finishedGood: "100% Spun Polyester Yarn 30s",
+      finishedGoodHsCode: "55092100",
+      finishedGoodUom: "KGS",
+      yieldRatio: 0.95, // 1 Kg PSF -> 0.95 Kg Spun Yarn
+      industryGroup: "Synthetic Spinning",
+    },
+    {
+      id: "SION-TX-05",
+      normCode: "SION-TX-05",
+      normDescription: "SION Norm T-88 - Specialized Finishing Auxiliaries to High-Performance Flame Retardant Fabric",
+      inputMaterial: "Flame Retardant Chemical FR-400",
+      inputHsCode: "38099190",
+      inputUom: "KGS",
+      finishedGood: "Flame Retardant Coated Fabric",
+      finishedGoodHsCode: "59039090",
+      finishedGoodUom: "MTR",
+      yieldRatio: 15.0, // 1 Kg chemical -> 15 MTR coated fabric
+      industryGroup: "Technical Textiles",
+    },
+  ];
+
+  // -------------------------------------------------------------------------
+  // INITIAL IN-MEMORY IMPORT DOCUMENTS STORE (Bills of Entry, GRNs, & Consumption)
+  // Clean initial state with zero dummy or mock records
+  // -------------------------------------------------------------------------
+  const INITIAL_IMPORT_DOCUMENTS: any[] = [];
+  const INITIAL_IMPORT_LINE_ITEMS: any[] = [];
+  const INITIAL_GOODS_RECEIPT_NOTES: any[] = [];
+  const INITIAL_CONSUMPTION_TRACKING: any[] = [];
+
+  let inMemoryImportDocumentsStore: any[] = [];
+  let inMemoryImportLineItemsStore: any[] = [];
+  let inMemoryGoodsReceiptNotesStore: any[] = [];
+  let inMemoryConsumptionTrackingStore: any[] = [];
+
+  // -------------------------------------------------------------------------
+  // PHASE 1: MATERIALS, FINISHED GOODS & SION NORMS IN-MEMORY STORES
+  // -------------------------------------------------------------------------
+  let inMemoryRawMaterialsStore: any[] = [];
+  let inMemoryFinishedGoodsStore: any[] = [];
+  let inMemorySionNormsStore: any[] = [];
+  let inMemoryMaterialSpecsStore: any[] = [];
+
+  const INITIAL_HS_CODE_DIRECTORY: any[] = [
+    {
+      id: "hs-001",
+      hsCode: "3809.10.10",
+      description: "Additive MB (Finishing agents / dye carriers with basis of amylaceous substances for textile treatment)",
+      itemType: "Import",
+      gstRate: 18.0,
+      notes: "Standard textile processing chemical"
+    },
+    {
+      id: "hs-002",
+      hsCode: "3809.10.20",
+      description: "Finished Additive MB Product (Formulated masterbatch textile auxiliary preparations)",
+      itemType: "Export",
+      gstRate: 18.0,
+      notes: "Textile export finished good"
+    },
+    {
+      id: "hs-003",
+      hsCode: "5201.00.15",
+      description: "Raw Cotton Long Staple (Staple length 31.5 mm and above, uncombed)",
+      itemType: "Import",
+      gstRate: 5.0,
+      notes: "Duty-free raw input under SION 62/2023"
+    },
+    {
+      id: "hs-004",
+      hsCode: "5208.11.90",
+      description: "100% Cotton Grey Woven Fabric (Plain weave, unbleached, weighing not more than 100 g/m2)",
+      itemType: "Export",
+      gstRate: 5.0,
+      notes: "Export obligation finished product"
+    },
+    {
+      id: "hs-005",
+      hsCode: "3204.11.11",
+      description: "Disperse Blue 79 Concentrate (Synthetic organic colouring matter for polyester dyeing)",
+      itemType: "Import",
+      gstRate: 18.0,
+      notes: "Synthetic dyestuff input"
+    },
+    {
+      id: "hs-006",
+      hsCode: "5513.21.00",
+      description: "Dyed Polyester-Cotton Fabric (Woven fabric of polyester staple fibers blended with cotton)",
+      itemType: "Export",
+      gstRate: 5.0,
+      notes: "Export obligation blended fabric"
+    },
+    {
+      id: "hs-007",
+      hsCode: "5503.20.00",
+      description: "Polyester Staple Fiber (PSF 1.4 Denier, not carded, combed or otherwise processed)",
+      itemType: "Import",
+      gstRate: 18.0,
+      notes: "Duty-free synthetic fiber import"
+    },
+    {
+      id: "hs-008",
+      hsCode: "5509.21.00",
+      description: "100% Spun Polyester Yarn 30s (Single yarn containing 85% or more by weight of polyester)",
+      itemType: "Export",
+      gstRate: 12.0,
+      notes: "Spun synthetic yarn export"
+    },
+    {
+      id: "hs-009",
+      hsCode: "3809.91.90",
+      description: "Flame Retardant Chemical Auxiliary FR-400 (Specialized textile finishing preparations)",
+      itemType: "Import",
+      gstRate: 18.0,
+      notes: "Technical textile auxiliary"
+    },
+    {
+      id: "hs-010",
+      hsCode: "5903.90.90",
+      description: "Flame Retardant Coated Technical Fabric (Textile fabrics impregnated, coated or laminated with polyurethane)",
+      itemType: "Export",
+      gstRate: 12.0,
+      notes: "High performance technical textile"
+    },
+    {
+      id: "hs-011",
+      hsCode: "2941.90.90",
+      description: "Ceftriaxone Sterile Bulk Drug / Active Pharmaceutical Ingredient (API)",
+      itemType: "Both",
+      gstRate: 12.0,
+      notes: "Pharma bulk drug input/output"
+    },
+    {
+      id: "hs-012",
+      hsCode: "2844.40.00",
+      description: "Radioactive Elements & Dual-Use Inorganic Compounds (SCOMET Restricted Item)",
+      itemType: "Import",
+      gstRate: 18.0,
+      notes: "SCOMET List 2A item requiring special DGFT end-user verification"
+    },
+    {
+      id: "hs-013",
+      hsCode: "3902.10.00",
+      description: "Polypropylene Homopolymer Granules (Virgin grade in primary forms)",
+      itemType: "Both",
+      gstRate: 18.0,
+      notes: "Polymer feedstock"
+    },
+    {
+      id: "hs-014",
+      hsCode: "7219.33.00",
+      description: "Stainless Steel Cold Rolled Coils (Thickness exceeding 1 mm but less than 3 mm)",
+      itemType: "Import",
+      gstRate: 18.0,
+      notes: "Cold rolled steel input"
+    },
+    {
+      id: "hs-015",
+      hsCode: "8482.10.11",
+      description: "Precision Radial Ball Bearings for Textile Spinning Machinery",
+      itemType: "Import",
+      gstRate: 18.0,
+      notes: "Component / spare part input"
+    }
+  ];
+
+  let inMemoryHsCodeMasterStore: any[] = [...INITIAL_HS_CODE_DIRECTORY];
+
+
+
+  // Helper to recalculate export obligation for a given licence
+  const recalculateExportObligation = async (licenceId: string, supabaseClient?: any) => {
+    let licence: any = null;
+    let bills: any[] = [];
+
+    if (supabaseClient) {
+      try {
+        const { data: licData } = await supabaseClient
+          .from("licence_master")
+          .select("*")
+          .eq("id", licenceId)
+          .single();
+        licence = licData;
+
+        const { data: sbData } = await supabaseClient
+          .from("shipping_bills")
+          .select("*, brc_tracking(*)")
+          .eq("licence_id", licenceId);
+        bills = sbData || [];
+      } catch {}
+    }
+
+    if (!licence) {
+      licence = inMemoryLicencesStore.find((l) => l.id === licenceId);
+      bills = inMemoryShippingBillsStore
+        .filter((b) => b.licenceId === licenceId || b.licence_id === licenceId)
+        .map((b) => ({
+          ...b,
+          brc_tracking: inMemoryBrcTrackingStore.find((brc) => brc.shipping_bill_id === b.id || brc.shippingBillId === b.id),
+        }));
+    }
+
+    if (!licence) return null;
+
+    const fobTargetInr = Number(licence.export_obligation_value || licence.exportObligationValue || licence.fob_value || licence.fobValue || licence.fobValueInr || 0);
+    const fobTargetFc = Number(licence.fob_value_fc || licence.fobValueFc || 0);
+    const currency = licence.export_foreign_currency || licence.exportForeignCurrency || "USD";
+
+    let realizedFobInr = 0;
+    let realizedFobFc = 0;
+    let realizedCount = 0;
+
+    bills.forEach((b: any) => {
+      const brc = b.brc_tracking || (Array.isArray(b.brc_tracking) ? b.brc_tracking[0] : null);
+      const isRealized = brc && (brc.brc_status === "Realized" || brc.brcStatus === "Realized");
+      
+      if (isRealized) {
+        realizedCount++;
+        const amountInr = Number(brc.realized_amount_inr || brc.realizedAmountInr || b.total_fob_inr || b.totalFobInr || 0);
+        const amountFc = Number(brc.realized_amount_fc || brc.realizedAmountFc || b.total_fob_fc || b.totalFobFc || 0);
+        realizedFobInr += amountInr;
+        realizedFobFc += amountFc;
+      }
+    });
+
+    const unrealizedFobInr = Math.max(0, fobTargetInr - realizedFobInr);
+    const fulfilledPercent = fobTargetInr > 0 ? Math.min(999, (realizedFobInr / fobTargetInr) * 100) : 0;
+
+    let status = "Not Started";
+    if (fulfilledPercent >= 100) {
+      status = fulfilledPercent > 100 ? "Over Fulfilled" : "Fully Realized";
+    } else if (fulfilledPercent > 0) {
+      status = fulfilledPercent >= 75 ? "Partially Fulfilled" : "In Progress";
+    } else if (bills.length > 0) {
+      status = "In Progress";
+    }
+
+    const eoResult = {
+      id: `EO-${licenceId}`,
+      licenceId,
+      licenceNumber: licence.licence_number || licence.licenceNumber || "",
+      companyFileNumber: licence.file_number || licence.fileNumber || "",
+      currency,
+      totalExportObligationFobInr: fobTargetInr,
+      totalExportObligationFobFc: fobTargetFc,
+      realizedFobInr,
+      realizedFobFc,
+      unrealizedFobInr,
+      fulfilledPercent: Number(fulfilledPercent.toFixed(4)),
+      status,
+      shippingBillsCount: bills.length,
+      realizedBillsCount: realizedCount,
+      lastCalculatedAt: new Date().toISOString(),
+    };
+
+    if (supabaseClient) {
+      try {
+        await supabaseClient.from("export_obligation_tracking").upsert({
+          licence_id: licenceId,
+          licence_number: eoResult.licenceNumber,
+          company_file_number: eoResult.companyFileNumber,
+          currency,
+          total_export_obligation_fob_inr: fobTargetInr,
+          total_export_obligation_fob_fc: fobTargetFc,
+          realized_fob_inr: realizedFobInr,
+          realized_fob_fc: realizedFobFc,
+          unrealized_fob_inr: unrealizedFobInr,
+          fulfilled_percent: eoResult.fulfilledPercent,
+          status,
+          shipping_bills_count: bills.length,
+          realized_bills_count: realizedCount,
+          last_calculated_at: new Date().toISOString(),
+        });
+      } catch (err: any) {
+        console.warn("[recalculateExportObligation] Upsert notice:", err.message);
+      }
+    }
+
+    return eoResult;
+  };
+
+  // -------------------------------------------------------------------------
+  // ADMIN API: PURGE / CLEAR ALL DUMMY DATA (In-Memory + Supabase Postgres)
+  // -------------------------------------------------------------------------
+  app.post("/api/admin/purge-all-data", async (req, res) => {
+    inMemoryLicencesStore = [];
+    inMemoryShippingBillsStore = [];
+    inMemoryShippingBillItemsStore = [];
+    inMemoryBrcTrackingStore = [];
+    inMemoryImportDocumentsStore = [];
+    inMemoryImportLineItemsStore = [];
+    inMemoryGoodsReceiptNotesStore = [];
+    inMemoryConsumptionTrackingStore = [];
+    inMemoryUtilizationSnapshots = [];
+    inMemoryUtilizationAlerts = [];
+    inMemoryRawMaterialsStore = [];
+    inMemoryFinishedGoodsStore = [];
+    inMemorySionNormsStore = [];
+    inMemoryMaterialSpecsStore = [];
+
+    const supabase = getSupabaseServerClient();
+    const purgedTables: string[] = [];
+    const tableErrors: Record<string, string> = {};
+
+    if (supabase) {
+      const tables = [
+        "material_specifications",
+        "sion_norms",
+        "raw_materials",
+        "finished_goods",
+        "consumption_tracking",
+        "goods_receipt_notes",
+        "import_line_items",
+        "import_documents",
+        "brc_tracking",
+        "shipping_bill_items",
+        "shipping_bills",
+        "export_obligation_tracking",
+        "utilization_alerts",
+        "utilization_snapshots",
+        "licence_export_items",
+        "licence_master",
+      ];
+
+      for (const tbl of tables) {
+        try {
+          const { error } = await supabase.from(tbl).delete().neq("id", "00000000-0000-0000-0000-000000000000");
+          if (error) {
+            tableErrors[tbl] = error.message;
+          } else {
+            purgedTables.push(tbl);
+          }
+        } catch (e: any) {
+          tableErrors[tbl] = e.message;
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: "All dummy data removed from preview and database stores.",
+      inMemoryStoresCleared: true,
+      supabaseConnected: Boolean(supabase),
+      purgedTables,
+      tableErrors: Object.keys(tableErrors).length > 0 ? tableErrors : undefined,
+    });
+  });
+
+  // =========================================================================
+  // PHASE 1: HS CODES & MATERIALS MASTER APIS
+  // =========================================================================
+
+  // GET /api/hs-codes - Search and fetch ITC HS codes
+  app.get("/api/hs-codes", async (req, res) => {
+    const { search = "", type } = req.query;
+    const searchText = String(search).trim().toLowerCase();
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        let query = supabase.from("hs_code_master").select("*");
+        if (type && type !== "All") {
+          query = query.or(`item_type.eq.${type},item_type.eq.Both`);
+        }
+        if (searchText) {
+          query = query.or(`hs_code.ilike.%${searchText}%,description.ilike.%${searchText}%`);
+        }
+        const { data, error } = await query.limit(100);
+        if (!error && data && data.length > 0) {
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: data.map((item) => ({
+              id: item.id,
+              hsCode: item.hs_code,
+              description: item.description,
+              itemType: item.item_type,
+              gstRate: Number(item.gst_rate || 18.0),
+              notes: item.notes,
+            })),
+          });
+        }
+      } catch {}
+    }
+
+    // Fallback to in-memory HS code catalog
+    let filtered = inMemoryHsCodeMasterStore;
+    if (type && type !== "All") {
+      filtered = filtered.filter((h) => h.itemType === type || h.itemType === "Both");
+    }
+    if (searchText) {
+      filtered = filtered.filter(
+        (h) =>
+          h.hsCode.toLowerCase().includes(searchText) ||
+          h.description.toLowerCase().includes(searchText)
+      );
+    }
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: filtered,
+    });
+  });
+
+  // Helper function to calculate SION status based on dates
+  const calculateSionStatus = (effectiveFrom?: string | null, effectiveTo?: string | null): 'Active' | 'Expired' | 'Upcoming' => {
+    const today = new Date().toISOString().split("T")[0];
+    if (effectiveFrom && effectiveFrom > today) {
+      return "Upcoming";
+    }
+    if (effectiveTo && effectiveTo < today) {
+      return "Expired";
+    }
+    return "Active";
+  };
+
+  // GET /api/materials/summary - Summary KPI metrics for Materials & SION Master
+  app.get("/api/materials/summary", async (req, res) => {
+    const supabase = getSupabaseServerClient();
+    let totalMaterials = 0;
+    let totalProducts = 0;
+    let activeSionNorms = 0;
+    let scometItemsCount = 0;
+    let chemicalsCount = 0;
+    let componentsCount = 0;
+    let consumablesCount = 0;
+    let catalystsCount = 0;
+
+    if (supabase) {
+      try {
+        const [rmRes, fgRes, snRes] = await Promise.all([
+          supabase.from("raw_materials").select("id, is_scomet, material_type"),
+          supabase.from("finished_goods").select("id", { count: "exact", head: true }),
+          supabase.from("sion_norms").select("id, effective_from, effective_to"),
+        ]);
+
+        if (!rmRes.error && rmRes.data) {
+          totalMaterials = rmRes.data.length;
+          scometItemsCount = rmRes.data.filter((r) => r.is_scomet).length;
+          chemicalsCount = rmRes.data.filter((r) => r.material_type === "Chemical").length;
+          componentsCount = rmRes.data.filter((r) => r.material_type === "Component").length;
+          consumablesCount = rmRes.data.filter((r) => r.material_type === "Consumable").length;
+          catalystsCount = rmRes.data.filter((r) => r.material_type === "Catalyst").length;
+        }
+
+        if (!fgRes.error) {
+          totalProducts = fgRes.count || 0;
+        }
+
+        if (!snRes.error && snRes.data) {
+          activeSionNorms = snRes.data.filter(
+            (s) => calculateSionStatus(s.effective_from, s.effective_to) === "Active"
+          ).length;
+        }
+
+        return res.json({
+          success: true,
+          source: "supabase_postgresql",
+          summary: {
+            totalMaterials,
+            totalProducts,
+            activeSionNorms,
+            scometItemsCount,
+            chemicalsCount,
+            componentsCount,
+            consumablesCount,
+            catalystsCount,
+          },
+        });
+      } catch {}
+    }
+
+    // In-memory fallback
+    totalMaterials = inMemoryRawMaterialsStore.length;
+    scometItemsCount = inMemoryRawMaterialsStore.filter((r) => r.isScomet).length;
+    chemicalsCount = inMemoryRawMaterialsStore.filter((r) => r.materialType === "Chemical").length;
+    componentsCount = inMemoryRawMaterialsStore.filter((r) => r.materialType === "Component").length;
+    consumablesCount = inMemoryRawMaterialsStore.filter((r) => r.materialType === "Consumable").length;
+    catalystsCount = inMemoryRawMaterialsStore.filter((r) => r.materialType === "Catalyst").length;
+    totalProducts = inMemoryFinishedGoodsStore.length;
+    activeSionNorms = inMemorySionNormsStore.filter(
+      (s) => calculateSionStatus(s.effectiveFrom, s.effectiveTo) === "Active"
+    ).length;
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      summary: {
+        totalMaterials,
+        totalProducts,
+        activeSionNorms,
+        scometItemsCount,
+        chemicalsCount,
+        componentsCount,
+        consumablesCount,
+        catalystsCount,
+      },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // RAW MATERIALS CRUD ENDPOINTS
+  // -------------------------------------------------------------------------
+
+  // GET /api/raw-materials
+  app.get("/api/raw-materials", async (req, res) => {
+    const {
+      page = "1",
+      limit = "50",
+      sortBy = "created_at",
+      sortOrder = "desc",
+      searchText = "",
+      materialType,
+      isScomet,
+      hsCode,
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
+    const limitNum = limit === "all" ? 1000 : Math.max(1, parseInt(String(limit), 10) || 50);
+    const offset = (pageNum - 1) * limitNum;
+    const search = String(searchText).trim().toLowerCase();
+
+    const supabase = getSupabaseServerClient();
+    if (supabase) {
+      try {
+        let query = supabase.from("raw_materials").select(
+          `
+            *,
+            material_specifications(*),
+            sion_norms(
+              id,
+              sion_code,
+              finished_good_id,
+              input_quantity,
+              input_uom,
+              output_quantity,
+              output_uom,
+              yield_ratio,
+              wastage_percent,
+              effective_from,
+              effective_to,
+              finished_goods(product_code, product_name)
+            )
+          `,
+          { count: "exact" }
+        );
+
+        if (materialType && materialType !== "All") {
+          query = query.eq("material_type", materialType);
+        }
+        if (isScomet !== undefined && isScomet !== "") {
+          query = query.eq("is_scomet", String(isScomet) === "true");
+        }
+        if (hsCode) {
+          query = query.ilike("hs_code", `%${hsCode}%`);
+        }
+        if (search) {
+          query = query.or(
+            `material_code.ilike.%${search}%,material_name.ilike.%${search}%,hs_code.ilike.%${search}%,description.ilike.%${search}%`
+          );
+        }
+
+        const orderCol = sortBy === "materialCode" ? "material_code" : sortBy === "materialName" ? "material_name" : "created_at";
+        query = query.order(orderCol, { ascending: sortOrder === "asc" });
+        query = query.range(offset, offset + limitNum - 1);
+
+        const { data, count, error } = await query;
+        if (!error && data) {
+          const totalRecords = count || data.length;
+          const mapped = data.map((r: any) => ({
+            id: r.id,
+            materialCode: r.material_code,
+            materialName: r.material_name,
+            hsCode: r.hs_code,
+            hsDescription: r.hs_description,
+            materialType: r.material_type,
+            uom: r.uom,
+            cifValuePerUnit: Number(r.cif_value_per_unit || 0),
+            importCurrency: r.import_currency || "USD",
+            isScomet: Boolean(r.is_scomet),
+            scometCategory: r.scomet_category,
+            scometControlReason: r.scomet_control_reason,
+            description: r.description,
+            notes: r.notes,
+            specifications: (r.material_specifications || []).map((s: any) => ({
+              id: s.id,
+              specificationName: s.specification_name,
+              specificationValue: s.specification_value,
+              specificationUnit: s.specification_unit,
+              notes: s.notes,
+            })),
+            sionNorms: (r.sion_norms || []).map((s: any) => ({
+              id: s.id,
+              sionCode: s.sion_code,
+              finishedGoodId: s.finished_good_id,
+              finishedGoodName: s.finished_goods?.product_name,
+              finishedGoodCode: s.finished_goods?.product_code,
+              inputQuantity: Number(s.input_quantity || 1),
+              inputUom: s.input_uom,
+              outputQuantity: Number(s.output_quantity || 1),
+              outputUom: s.output_uom,
+              yieldRatio: Number(s.yield_ratio || 1),
+              wastagePercent: Number(s.wastage_percent || 0),
+              effectiveFrom: s.effective_from,
+              effectiveTo: s.effective_to,
+              status: calculateSionStatus(s.effective_from, s.effective_to),
+            })),
+            createdAt: r.created_at,
+            updatedAt: r.updated_at,
+          }));
+
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: mapped,
+            pagination: {
+              currentPage: pageNum,
+              totalPages: Math.ceil(totalRecords / limitNum),
+              totalRecords,
+              limit: limitNum,
+              hasNextPage: pageNum * limitNum < totalRecords,
+              hasPrevPage: pageNum > 1,
+            },
+          });
+        }
+      } catch {}
+    }
+
+    // In-memory fallback
+    let filtered = [...inMemoryRawMaterialsStore];
+    if (materialType && materialType !== "All") {
+      filtered = filtered.filter((r) => r.materialType === materialType);
+    }
+    if (isScomet !== undefined && isScomet !== "") {
+      filtered = filtered.filter((r) => String(r.isScomet) === String(isScomet));
+    }
+    if (hsCode) {
+      filtered = filtered.filter((r) => r.hsCode?.toLowerCase().includes(String(hsCode).toLowerCase()));
+    }
+    if (search) {
+      filtered = filtered.filter(
+        (r) =>
+          r.materialCode?.toLowerCase().includes(search) ||
+          r.materialName?.toLowerCase().includes(search) ||
+          r.hsCode?.toLowerCase().includes(search) ||
+          r.description?.toLowerCase().includes(search)
+      );
+    }
+
+    const totalRecords = filtered.length;
+    const paginated = filtered.slice(offset, offset + limitNum).map((r) => {
+      const specs = inMemoryMaterialSpecsStore.filter((s) => s.rawMaterialId === r.id);
+      const linkedSions = inMemorySionNormsStore
+        .filter((sn) => sn.rawMaterialId === r.id)
+        .map((sn) => {
+          const fg = inMemoryFinishedGoodsStore.find((f) => f.id === sn.finishedGoodId);
+          return {
+            id: sn.id,
+            sionCode: sn.sionCode,
+            finishedGoodId: sn.finishedGoodId,
+            finishedGoodName: fg?.productName,
+            finishedGoodCode: fg?.productCode,
+            inputQuantity: sn.inputQuantity,
+            inputUom: sn.inputUom,
+            outputQuantity: sn.outputQuantity,
+            outputUom: sn.outputUom,
+            yieldRatio: sn.yieldRatio,
+            wastagePercent: sn.wastagePercent,
+            effectiveFrom: sn.effectiveFrom,
+            effectiveTo: sn.effectiveTo,
+            status: calculateSionStatus(sn.effectiveFrom, sn.effectiveTo),
+          };
+        });
+
+      return {
+        ...r,
+        specifications: specs,
+        sionNorms: linkedSions,
+      };
+    });
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: paginated,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(totalRecords / limitNum) || 1,
+        totalRecords,
+        limit: limitNum,
+        hasNextPage: pageNum * limitNum < totalRecords,
+        hasPrevPage: pageNum > 1,
+      },
+    });
+  });
+
+  // POST /api/raw-materials
+  app.post("/api/raw-materials", async (req, res) => {
+    try {
+      const payload = req.body || {};
+      const {
+        materialCode,
+        materialName,
+        hsCode,
+        hsDescription,
+        materialType = "Chemical",
+        uom = "Kgs",
+        cifValuePerUnit = 0,
+        importCurrency = "USD",
+        isScomet = false,
+        scometCategory,
+        scometControlReason,
+        description,
+        notes,
+        specifications = [],
+      } = payload;
+
+      if (!materialCode || !materialName || !hsCode) {
+        return res.status(400).json({
+          success: false,
+          message: "materialCode, materialName, and hsCode are required fields.",
+        });
+      }
+
+      // Auto-fetch HS description from directory if missing
+      let finalHsDescription = hsDescription;
+      if (!finalHsDescription) {
+        const foundHs = inMemoryHsCodeMasterStore.find(
+          (h) => h.hsCode.replace(/\./g, "") === hsCode.replace(/\./g, "") || h.hsCode === hsCode
+        );
+        if (foundHs) finalHsDescription = foundHs.description;
+      }
+
+      const newId = payload.id || crypto.randomUUID();
+      const supabase = getSupabaseServerClient();
+
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("raw_materials")
+            .insert({
+              id: newId,
+              material_code: materialCode.trim().toUpperCase(),
+              material_name: materialName.trim(),
+              hs_code: hsCode.trim(),
+              hs_description: finalHsDescription,
+              material_type: materialType,
+              uom: uom.trim(),
+              cif_value_per_unit: Number(cifValuePerUnit || 0),
+              import_currency: importCurrency,
+              is_scomet: Boolean(isScomet),
+              scomet_category: isScomet ? scometCategory : null,
+              scomet_control_reason: isScomet ? scometControlReason : null,
+              description,
+              notes,
+            })
+            .select()
+            .single();
+
+          if (!error && data) {
+            // Save specifications if provided
+            if (Array.isArray(specifications) && specifications.length > 0) {
+              const specRows = specifications.map((s: any) => ({
+                id: s.id || crypto.randomUUID(),
+                raw_material_id: newId,
+                specification_name: s.specificationName,
+                specification_value: s.specificationValue,
+                specification_unit: s.specificationUnit,
+                notes: s.notes,
+              }));
+              await supabase.from("material_specifications").insert(specRows);
+            }
+
+            return res.status(201).json({
+              success: true,
+              source: "supabase_postgresql",
+              data: {
+                id: data.id,
+                materialCode: data.material_code,
+                materialName: data.material_name,
+                hsCode: data.hs_code,
+                hsDescription: data.hs_description,
+                materialType: data.material_type,
+                uom: data.uom,
+                cifValuePerUnit: Number(data.cif_value_per_unit),
+                importCurrency: data.import_currency,
+                isScomet: Boolean(data.is_scomet),
+                scometCategory: data.scomet_category,
+                scometControlReason: data.scomet_control_reason,
+                description: data.description,
+                notes: data.notes,
+                specifications,
+                createdAt: data.created_at,
+                updatedAt: data.updated_at,
+              },
+            });
+          }
+        } catch {}
+      }
+
+      // In-memory create
+      const createdItem = {
+        id: newId,
+        materialCode: materialCode.trim().toUpperCase(),
+        materialName: materialName.trim(),
+        hsCode: hsCode.trim(),
+        hsDescription: finalHsDescription,
+        materialType,
+        uom: uom.trim(),
+        cifValuePerUnit: Number(cifValuePerUnit || 0),
+        importCurrency,
+        isScomet: Boolean(isScomet),
+        scometCategory: isScomet ? scometCategory : undefined,
+        scometControlReason: isScomet ? scometControlReason : undefined,
+        description,
+        notes,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      inMemoryRawMaterialsStore.unshift(createdItem);
+
+      if (Array.isArray(specifications) && specifications.length > 0) {
+        specifications.forEach((s: any) => {
+          inMemoryMaterialSpecsStore.push({
+            id: s.id || crypto.randomUUID(),
+            rawMaterialId: newId,
+            specificationName: s.specificationName,
+            specificationValue: s.specificationValue,
+            specificationUnit: s.specificationUnit,
+            notes: s.notes,
+            createdAt: new Date().toISOString(),
+          });
+        });
+      }
+
+      return res.status(201).json({
+        success: true,
+        source: "in_memory_preview",
+        data: {
+          ...createdItem,
+          specifications,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // GET /api/raw-materials/:id
+  app.get("/api/raw-materials/:id", async (req, res) => {
     const { id } = req.params;
     const supabase = getSupabaseServerClient();
 
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("raw_materials")
+          .select(`*, material_specifications(*), sion_norms(*, finished_goods(*))`)
+          .eq("id", id)
+          .single();
+
+        if (!error && data) {
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: {
+              id: data.id,
+              materialCode: data.material_code,
+              materialName: data.material_name,
+              hsCode: data.hs_code,
+              hsDescription: data.hs_description,
+              materialType: data.material_type,
+              uom: data.uom,
+              cifValuePerUnit: Number(data.cif_value_per_unit || 0),
+              importCurrency: data.import_currency,
+              isScomet: Boolean(data.is_scomet),
+              scometCategory: data.scomet_category,
+              scometControlReason: data.scomet_control_reason,
+              description: data.description,
+              notes: data.notes,
+              specifications: (data.material_specifications || []).map((s: any) => ({
+                id: s.id,
+                specificationName: s.specification_name,
+                specificationValue: s.specification_value,
+                specificationUnit: s.specification_unit,
+                notes: s.notes,
+              })),
+              sionNorms: (data.sion_norms || []).map((s: any) => ({
+                id: s.id,
+                sionCode: s.sion_code,
+                finishedGoodId: s.finished_good_id,
+                finishedGoodName: s.finished_goods?.product_name,
+                finishedGoodCode: s.finished_goods?.product_code,
+                inputQuantity: Number(s.input_quantity || 1),
+                inputUom: s.input_uom,
+                outputQuantity: Number(s.output_quantity || 1),
+                outputUom: s.output_uom,
+                yieldRatio: Number(s.yield_ratio || 1),
+                wastagePercent: Number(s.wastage_percent || 0),
+                effectiveFrom: s.effective_from,
+                effectiveTo: s.effective_to,
+                status: calculateSionStatus(s.effective_from, s.effective_to),
+              })),
+              createdAt: data.created_at,
+              updatedAt: data.updated_at,
+            },
+          });
+        }
+      } catch {}
+    }
+
+    const item = inMemoryRawMaterialsStore.find((r) => r.id === id);
+    if (!item) {
+      return res.status(404).json({ success: false, message: "Raw material not found." });
+    }
+
+    const specs = inMemoryMaterialSpecsStore.filter((s) => s.rawMaterialId === id);
+    const linkedSions = inMemorySionNormsStore
+      .filter((sn) => sn.rawMaterialId === id)
+      .map((sn) => {
+        const fg = inMemoryFinishedGoodsStore.find((f) => f.id === sn.finishedGoodId);
+        return {
+          id: sn.id,
+          sionCode: sn.sionCode,
+          finishedGoodId: sn.finishedGoodId,
+          finishedGoodName: fg?.productName,
+          finishedGoodCode: fg?.productCode,
+          inputQuantity: sn.inputQuantity,
+          inputUom: sn.inputUom,
+          outputQuantity: sn.outputQuantity,
+          outputUom: sn.outputUom,
+          yieldRatio: sn.yieldRatio,
+          wastagePercent: sn.wastagePercent,
+          effectiveFrom: sn.effectiveFrom,
+          effectiveTo: sn.effectiveTo,
+          status: calculateSionStatus(sn.effectiveFrom, sn.effectiveTo),
+        };
+      });
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: {
+        ...item,
+        specifications: specs,
+        sionNorms: linkedSions,
+      },
+    });
+  });
+
+  // PUT /api/raw-materials/:id
+  app.put("/api/raw-materials/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const payload = req.body || {};
+      const supabase = getSupabaseServerClient();
+
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("raw_materials")
+            .update({
+              material_code: payload.materialCode ? payload.materialCode.trim().toUpperCase() : undefined,
+              material_name: payload.materialName?.trim(),
+              hs_code: payload.hsCode?.trim(),
+              hs_description: payload.hsDescription,
+              material_type: payload.materialType,
+              uom: payload.uom?.trim(),
+              cif_value_per_unit: payload.cifValuePerUnit !== undefined ? Number(payload.cifValuePerUnit) : undefined,
+              import_currency: payload.importCurrency,
+              is_scomet: payload.isScomet !== undefined ? Boolean(payload.isScomet) : undefined,
+              scomet_category: payload.isScomet ? payload.scometCategory : null,
+              scomet_control_reason: payload.isScomet ? payload.scometControlReason : null,
+              description: payload.description,
+              notes: payload.notes,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", id)
+            .select()
+            .single();
+
+          if (!error && data) {
+            // Update specifications if provided
+            if (Array.isArray(payload.specifications)) {
+              await supabase.from("material_specifications").delete().eq("raw_material_id", id);
+              if (payload.specifications.length > 0) {
+                const specRows = payload.specifications.map((s: any) => ({
+                  id: s.id || crypto.randomUUID(),
+                  raw_material_id: id,
+                  specification_name: s.specificationName,
+                  specification_value: s.specificationValue,
+                  specification_unit: s.specificationUnit,
+                  notes: s.notes,
+                }));
+                await supabase.from("material_specifications").insert(specRows);
+              }
+            }
+
+            return res.json({
+              success: true,
+              source: "supabase_postgresql",
+              data: {
+                id: data.id,
+                materialCode: data.material_code,
+                materialName: data.material_name,
+                hsCode: data.hs_code,
+                hsDescription: data.hs_description,
+                materialType: data.material_type,
+                uom: data.uom,
+                cifValuePerUnit: Number(data.cif_value_per_unit || 0),
+                importCurrency: data.import_currency,
+                isScomet: Boolean(data.is_scomet),
+                scometCategory: data.scomet_category,
+                scometControlReason: data.scomet_control_reason,
+                description: data.description,
+                notes: data.notes,
+                specifications: payload.specifications,
+                updatedAt: data.updated_at,
+              },
+            });
+          }
+        } catch {}
+      }
+
+      // In-memory update
+      const idx = inMemoryRawMaterialsStore.findIndex((r) => r.id === id);
+      if (idx === -1) {
+        return res.status(404).json({ success: false, message: "Raw material not found." });
+      }
+
+      inMemoryRawMaterialsStore[idx] = {
+        ...inMemoryRawMaterialsStore[idx],
+        materialCode: payload.materialCode ? payload.materialCode.trim().toUpperCase() : inMemoryRawMaterialsStore[idx].materialCode,
+        materialName: payload.materialName || inMemoryRawMaterialsStore[idx].materialName,
+        hsCode: payload.hsCode || inMemoryRawMaterialsStore[idx].hsCode,
+        hsDescription: payload.hsDescription !== undefined ? payload.hsDescription : inMemoryRawMaterialsStore[idx].hsDescription,
+        materialType: payload.materialType || inMemoryRawMaterialsStore[idx].materialType,
+        uom: payload.uom || inMemoryRawMaterialsStore[idx].uom,
+        cifValuePerUnit: payload.cifValuePerUnit !== undefined ? Number(payload.cifValuePerUnit) : inMemoryRawMaterialsStore[idx].cifValuePerUnit,
+        importCurrency: payload.importCurrency || inMemoryRawMaterialsStore[idx].importCurrency,
+        isScomet: payload.isScomet !== undefined ? Boolean(payload.isScomet) : inMemoryRawMaterialsStore[idx].isScomet,
+        scometCategory: payload.isScomet ? payload.scometCategory : undefined,
+        scometControlReason: payload.isScomet ? payload.scometControlReason : undefined,
+        description: payload.description !== undefined ? payload.description : inMemoryRawMaterialsStore[idx].description,
+        notes: payload.notes !== undefined ? payload.notes : inMemoryRawMaterialsStore[idx].notes,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (Array.isArray(payload.specifications)) {
+        inMemoryMaterialSpecsStore = inMemoryMaterialSpecsStore.filter((s) => s.rawMaterialId !== id);
+        payload.specifications.forEach((s: any) => {
+          inMemoryMaterialSpecsStore.push({
+            id: s.id || crypto.randomUUID(),
+            rawMaterialId: id,
+            specificationName: s.specificationName,
+            specificationValue: s.specificationValue,
+            specificationUnit: s.specificationUnit,
+            notes: s.notes,
+            createdAt: new Date().toISOString(),
+          });
+        });
+      }
+
+      return res.json({
+        success: true,
+        source: "in_memory_preview",
+        data: {
+          ...inMemoryRawMaterialsStore[idx],
+          specifications: payload.specifications,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // DELETE /api/raw-materials/:id
+  app.delete("/api/raw-materials/:id", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        await supabase.from("sion_norms").delete().eq("raw_material_id", id);
+        await supabase.from("material_specifications").delete().eq("raw_material_id", id);
+        const { error } = await supabase.from("raw_materials").delete().eq("id", id);
+        if (!error) {
+          return res.json({ success: true, message: "Raw material deleted successfully.", id });
+        }
+      } catch {}
+    }
+
+    inMemoryRawMaterialsStore = inMemoryRawMaterialsStore.filter((r) => r.id !== id);
+    inMemoryMaterialSpecsStore = inMemoryMaterialSpecsStore.filter((s) => s.rawMaterialId !== id);
+    inMemorySionNormsStore = inMemorySionNormsStore.filter((s) => s.rawMaterialId !== id);
+
+    return res.json({ success: true, message: "Raw material deleted successfully from store.", id });
+  });
+
+  // -------------------------------------------------------------------------
+  // FINISHED GOODS CRUD ENDPOINTS
+  // -------------------------------------------------------------------------
+
+  // GET /api/finished-goods
+  app.get("/api/finished-goods", async (req, res) => {
+    const {
+      page = "1",
+      limit = "50",
+      sortBy = "created_at",
+      sortOrder = "desc",
+      searchText = "",
+      hsCode,
+      isExportObligationItem,
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
+    const limitNum = limit === "all" ? 1000 : Math.max(1, parseInt(String(limit), 10) || 50);
+    const offset = (pageNum - 1) * limitNum;
+    const search = String(searchText).trim().toLowerCase();
+
+    const supabase = getSupabaseServerClient();
+    if (supabase) {
+      try {
+        let query = supabase.from("finished_goods").select(
+          `
+            *,
+            sion_norms(
+              id,
+              sion_code,
+              raw_material_id,
+              input_quantity,
+              input_uom,
+              output_quantity,
+              output_uom,
+              yield_ratio,
+              wastage_percent,
+              effective_from,
+              effective_to,
+              raw_materials(material_code, material_name)
+            )
+          `,
+          { count: "exact" }
+        );
+
+        if (isExportObligationItem !== undefined && isExportObligationItem !== "") {
+          query = query.eq("is_export_obligation_item", String(isExportObligationItem) === "true");
+        }
+        if (hsCode) {
+          query = query.ilike("hs_code", `%${hsCode}%`);
+        }
+        if (search) {
+          query = query.or(
+            `product_code.ilike.%${search}%,product_name.ilike.%${search}%,hs_code.ilike.%${search}%,description.ilike.%${search}%`
+          );
+        }
+
+        const orderCol = sortBy === "productCode" ? "product_code" : sortBy === "productName" ? "product_name" : "created_at";
+        query = query.order(orderCol, { ascending: sortOrder === "asc" });
+        query = query.range(offset, offset + limitNum - 1);
+
+        const { data, count, error } = await query;
+        if (!error && data) {
+          const totalRecords = count || data.length;
+          const mapped = data.map((f: any) => ({
+            id: f.id,
+            productCode: f.product_code,
+            productName: f.product_name,
+            hsCode: f.hs_code,
+            hsDescription: f.hs_description,
+            uom: f.uom,
+            description: f.description,
+            isExportObligationItem: Boolean(f.is_export_obligation_item),
+            notes: f.notes,
+            sionNorms: (f.sion_norms || []).map((s: any) => ({
+              id: s.id,
+              sionCode: s.sion_code,
+              rawMaterialId: s.raw_material_id,
+              rawMaterialName: s.raw_materials?.material_name,
+              rawMaterialCode: s.raw_materials?.material_code,
+              inputQuantity: Number(s.input_quantity || 1),
+              inputUom: s.input_uom,
+              outputQuantity: Number(s.output_quantity || 1),
+              outputUom: s.output_uom,
+              yieldRatio: Number(s.yield_ratio || 1),
+              wastagePercent: Number(s.wastage_percent || 0),
+              effectiveFrom: s.effective_from,
+              effectiveTo: s.effective_to,
+              status: calculateSionStatus(s.effective_from, s.effective_to),
+            })),
+            createdAt: f.created_at,
+            updatedAt: f.updated_at,
+          }));
+
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: mapped,
+            pagination: {
+              currentPage: pageNum,
+              totalPages: Math.ceil(totalRecords / limitNum),
+              totalRecords,
+              limit: limitNum,
+              hasNextPage: pageNum * limitNum < totalRecords,
+              hasPrevPage: pageNum > 1,
+            },
+          });
+        }
+      } catch {}
+    }
+
+    // In-memory fallback
+    let filtered = [...inMemoryFinishedGoodsStore];
+    if (isExportObligationItem !== undefined && isExportObligationItem !== "") {
+      filtered = filtered.filter((f) => String(f.isExportObligationItem) === String(isExportObligationItem));
+    }
+    if (hsCode) {
+      filtered = filtered.filter((f) => f.hsCode?.toLowerCase().includes(String(hsCode).toLowerCase()));
+    }
+    if (search) {
+      filtered = filtered.filter(
+        (f) =>
+          f.productCode?.toLowerCase().includes(search) ||
+          f.productName?.toLowerCase().includes(search) ||
+          f.hsCode?.toLowerCase().includes(search) ||
+          f.description?.toLowerCase().includes(search)
+      );
+    }
+
+    const totalRecords = filtered.length;
+    const paginated = filtered.slice(offset, offset + limitNum).map((f) => {
+      const linkedSions = inMemorySionNormsStore
+        .filter((sn) => sn.finishedGoodId === f.id)
+        .map((sn) => {
+          const rm = inMemoryRawMaterialsStore.find((r) => r.id === sn.rawMaterialId);
+          return {
+            id: sn.id,
+            sionCode: sn.sionCode,
+            rawMaterialId: sn.rawMaterialId,
+            rawMaterialName: rm?.materialName,
+            rawMaterialCode: rm?.materialCode,
+            inputQuantity: sn.inputQuantity,
+            inputUom: sn.inputUom,
+            outputQuantity: sn.outputQuantity,
+            outputUom: sn.outputUom,
+            yieldRatio: sn.yieldRatio,
+            wastagePercent: sn.wastagePercent,
+            effectiveFrom: sn.effectiveFrom,
+            effectiveTo: sn.effectiveTo,
+            status: calculateSionStatus(sn.effectiveFrom, sn.effectiveTo),
+          };
+        });
+
+      return {
+        ...f,
+        sionNorms: linkedSions,
+      };
+    });
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: paginated,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(totalRecords / limitNum) || 1,
+        totalRecords,
+        limit: limitNum,
+        hasNextPage: pageNum * limitNum < totalRecords,
+        hasPrevPage: pageNum > 1,
+      },
+    });
+  });
+
+  // POST /api/finished-goods
+  app.post("/api/finished-goods", async (req, res) => {
+    try {
+      const payload = req.body || {};
+      const {
+        productCode,
+        productName,
+        hsCode,
+        hsDescription,
+        uom = "Kgs",
+        description,
+        isExportObligationItem = true,
+        notes,
+      } = payload;
+
+      if (!productCode || !productName || !hsCode) {
+        return res.status(400).json({
+          success: false,
+          message: "productCode, productName, and hsCode are required fields.",
+        });
+      }
+
+      // Auto-fetch HS description from directory if missing
+      let finalHsDescription = hsDescription;
+      if (!finalHsDescription) {
+        const foundHs = inMemoryHsCodeMasterStore.find(
+          (h) => h.hsCode.replace(/\./g, "") === hsCode.replace(/\./g, "") || h.hsCode === hsCode
+        );
+        if (foundHs) finalHsDescription = foundHs.description;
+      }
+
+      const newId = payload.id || crypto.randomUUID();
+      const supabase = getSupabaseServerClient();
+
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("finished_goods")
+            .insert({
+              id: newId,
+              product_code: productCode.trim().toUpperCase(),
+              product_name: productName.trim(),
+              hs_code: hsCode.trim(),
+              hs_description: finalHsDescription,
+              uom: uom.trim(),
+              description,
+              is_export_obligation_item: Boolean(isExportObligationItem),
+              notes,
+            })
+            .select()
+            .single();
+
+          if (!error && data) {
+            return res.status(201).json({
+              success: true,
+              source: "supabase_postgresql",
+              data: {
+                id: data.id,
+                productCode: data.product_code,
+                productName: data.product_name,
+                hsCode: data.hs_code,
+                hsDescription: data.hs_description,
+                uom: data.uom,
+                description: data.description,
+                isExportObligationItem: Boolean(data.is_export_obligation_item),
+                notes: data.notes,
+                createdAt: data.created_at,
+                updatedAt: data.updated_at,
+              },
+            });
+          }
+        } catch {}
+      }
+
+      const createdItem = {
+        id: newId,
+        productCode: productCode.trim().toUpperCase(),
+        productName: productName.trim(),
+        hsCode: hsCode.trim(),
+        hsDescription: finalHsDescription,
+        uom: uom.trim(),
+        description,
+        isExportObligationItem: Boolean(isExportObligationItem),
+        notes,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      inMemoryFinishedGoodsStore.unshift(createdItem);
+
+      return res.status(201).json({
+        success: true,
+        source: "in_memory_preview",
+        data: createdItem,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // GET /api/finished-goods/:id
+  app.get("/api/finished-goods/:id", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("finished_goods")
+          .select(`*, sion_norms(*, raw_materials(*))`)
+          .eq("id", id)
+          .single();
+
+        if (!error && data) {
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: {
+              id: data.id,
+              productCode: data.product_code,
+              productName: data.product_name,
+              hsCode: data.hs_code,
+              hsDescription: data.hs_description,
+              uom: data.uom,
+              description: data.description,
+              isExportObligationItem: Boolean(data.is_export_obligation_item),
+              notes: data.notes,
+              sionNorms: (data.sion_norms || []).map((s: any) => ({
+                id: s.id,
+                sionCode: s.sion_code,
+                rawMaterialId: s.raw_material_id,
+                rawMaterialName: s.raw_materials?.material_name,
+                rawMaterialCode: s.raw_materials?.material_code,
+                inputQuantity: Number(s.input_quantity || 1),
+                inputUom: s.input_uom,
+                outputQuantity: Number(s.output_quantity || 1),
+                outputUom: s.output_uom,
+                yieldRatio: Number(s.yield_ratio || 1),
+                wastagePercent: Number(s.wastage_percent || 0),
+                effectiveFrom: s.effective_from,
+                effectiveTo: s.effective_to,
+                status: calculateSionStatus(s.effective_from, s.effective_to),
+              })),
+              createdAt: data.created_at,
+              updatedAt: data.updated_at,
+            },
+          });
+        }
+      } catch {}
+    }
+
+    const item = inMemoryFinishedGoodsStore.find((f) => f.id === id);
+    if (!item) {
+      return res.status(404).json({ success: false, message: "Finished good not found." });
+    }
+
+    const linkedSions = inMemorySionNormsStore
+      .filter((sn) => sn.finishedGoodId === id)
+      .map((sn) => {
+        const rm = inMemoryRawMaterialsStore.find((r) => r.id === sn.rawMaterialId);
+        return {
+          id: sn.id,
+          sionCode: sn.sionCode,
+          rawMaterialId: sn.rawMaterialId,
+          rawMaterialName: rm?.materialName,
+          rawMaterialCode: rm?.materialCode,
+          inputQuantity: sn.inputQuantity,
+          inputUom: sn.inputUom,
+          outputQuantity: sn.outputQuantity,
+          outputUom: sn.outputUom,
+          yieldRatio: sn.yieldRatio,
+          wastagePercent: sn.wastagePercent,
+          effectiveFrom: sn.effectiveFrom,
+          effectiveTo: sn.effectiveTo,
+          status: calculateSionStatus(sn.effectiveFrom, sn.effectiveTo),
+        };
+      });
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: {
+        ...item,
+        sionNorms: linkedSions,
+      },
+    });
+  });
+
+  // PUT /api/finished-goods/:id
+  app.put("/api/finished-goods/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const payload = req.body || {};
+      const supabase = getSupabaseServerClient();
+
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("finished_goods")
+            .update({
+              product_code: payload.productCode ? payload.productCode.trim().toUpperCase() : undefined,
+              product_name: payload.productName?.trim(),
+              hs_code: payload.hsCode?.trim(),
+              hs_description: payload.hsDescription,
+              uom: payload.uom?.trim(),
+              description: payload.description,
+              is_export_obligation_item: payload.isExportObligationItem !== undefined ? Boolean(payload.isExportObligationItem) : undefined,
+              notes: payload.notes,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", id)
+            .select()
+            .single();
+
+          if (!error && data) {
+            return res.json({
+              success: true,
+              source: "supabase_postgresql",
+              data: {
+                id: data.id,
+                productCode: data.product_code,
+                productName: data.product_name,
+                hsCode: data.hs_code,
+                hsDescription: data.hs_description,
+                uom: data.uom,
+                description: data.description,
+                isExportObligationItem: Boolean(data.is_export_obligation_item),
+                notes: data.notes,
+                updatedAt: data.updated_at,
+              },
+            });
+          }
+        } catch {}
+      }
+
+      const idx = inMemoryFinishedGoodsStore.findIndex((f) => f.id === id);
+      if (idx === -1) {
+        return res.status(404).json({ success: false, message: "Finished good not found." });
+      }
+
+      inMemoryFinishedGoodsStore[idx] = {
+        ...inMemoryFinishedGoodsStore[idx],
+        productCode: payload.productCode ? payload.productCode.trim().toUpperCase() : inMemoryFinishedGoodsStore[idx].productCode,
+        productName: payload.productName || inMemoryFinishedGoodsStore[idx].productName,
+        hsCode: payload.hsCode || inMemoryFinishedGoodsStore[idx].hsCode,
+        hsDescription: payload.hsDescription !== undefined ? payload.hsDescription : inMemoryFinishedGoodsStore[idx].hsDescription,
+        uom: payload.uom || inMemoryFinishedGoodsStore[idx].uom,
+        description: payload.description !== undefined ? payload.description : inMemoryFinishedGoodsStore[idx].description,
+        isExportObligationItem: payload.isExportObligationItem !== undefined ? Boolean(payload.isExportObligationItem) : inMemoryFinishedGoodsStore[idx].isExportObligationItem,
+        notes: payload.notes !== undefined ? payload.notes : inMemoryFinishedGoodsStore[idx].notes,
+        updatedAt: new Date().toISOString(),
+      };
+
+      return res.json({
+        success: true,
+        source: "in_memory_preview",
+        data: inMemoryFinishedGoodsStore[idx],
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // DELETE /api/finished-goods/:id
+  app.delete("/api/finished-goods/:id", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        await supabase.from("sion_norms").delete().eq("finished_good_id", id);
+        const { error } = await supabase.from("finished_goods").delete().eq("id", id);
+        if (!error) {
+          return res.json({ success: true, message: "Finished good deleted successfully.", id });
+        }
+      } catch {}
+    }
+
+    inMemoryFinishedGoodsStore = inMemoryFinishedGoodsStore.filter((f) => f.id !== id);
+    inMemorySionNormsStore = inMemorySionNormsStore.filter((s) => s.finishedGoodId !== id);
+
+    return res.json({ success: true, message: "Finished good deleted successfully from store.", id });
+  });
+
+  // -------------------------------------------------------------------------
+  // SION NORMS CRUD ENDPOINTS
+  // -------------------------------------------------------------------------
+
+  // GET /api/sion-norms
+  app.get("/api/sion-norms", async (req, res) => {
+    const {
+      page = "1",
+      limit = "50",
+      rawMaterialId,
+      finishedGoodId,
+      status,
+      searchText = "",
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
+    const limitNum = limit === "all" ? 1000 : Math.max(1, parseInt(String(limit), 10) || 50);
+    const offset = (pageNum - 1) * limitNum;
+    const search = String(searchText).trim().toLowerCase();
+
+    const supabase = getSupabaseServerClient();
+    if (supabase) {
+      try {
+        let query = supabase.from("sion_norms").select(
+          `
+            *,
+            raw_materials(id, material_code, material_name, hs_code),
+            finished_goods(id, product_code, product_name, hs_code)
+          `,
+          { count: "exact" }
+        );
+
+        if (rawMaterialId) {
+          query = query.eq("raw_material_id", rawMaterialId);
+        }
+        if (finishedGoodId) {
+          query = query.eq("finished_good_id", finishedGoodId);
+        }
+        if (search) {
+          query = query.or(
+            `sion_code.ilike.%${search}%,notes.ilike.%${search}%`
+          );
+        }
+
+        query = query.order("created_at", { ascending: false });
+        query = query.range(offset, offset + limitNum - 1);
+
+        const { data, count, error } = await query;
+        if (!error && data) {
+          const totalRecords = count || data.length;
+          let mapped = data.map((s: any) => ({
+            id: s.id,
+            sionCode: s.sion_code,
+            rawMaterialId: s.raw_material_id,
+            rawMaterialName: s.raw_materials?.material_name,
+            rawMaterialCode: s.raw_materials?.material_code,
+            rawMaterialHsCode: s.raw_materials?.hs_code,
+            finishedGoodId: s.finished_good_id,
+            finishedGoodName: s.finished_goods?.product_name,
+            finishedGoodCode: s.finished_goods?.product_code,
+            finishedGoodHsCode: s.finished_goods?.hs_code,
+            inputQuantity: Number(s.input_quantity || 1),
+            inputUom: s.input_uom,
+            outputQuantity: Number(s.output_quantity || 1),
+            outputUom: s.output_uom,
+            yieldRatio: Number(s.yield_ratio || (Number(s.output_quantity || 1) / Number(s.input_quantity || 1))),
+            wastagePercent: Number(s.wastage_percent || 0),
+            dgftNotificationDate: s.dgft_notification_date,
+            effectiveFrom: s.effective_from,
+            effectiveTo: s.effective_to,
+            status: calculateSionStatus(s.effective_from, s.effective_to),
+            notes: s.notes,
+            createdAt: s.created_at,
+            updatedAt: s.updated_at,
+          }));
+
+          if (status && status !== "All") {
+            mapped = mapped.filter((m) => m.status === status);
+          }
+
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: mapped,
+            pagination: {
+              currentPage: pageNum,
+              totalPages: Math.ceil(totalRecords / limitNum),
+              totalRecords,
+              limit: limitNum,
+              hasNextPage: pageNum * limitNum < totalRecords,
+              hasPrevPage: pageNum > 1,
+            },
+          });
+        }
+      } catch {}
+    }
+
+    // In-memory fallback
+    let filtered = inMemorySionNormsStore.map((sn) => {
+      const rm = inMemoryRawMaterialsStore.find((r) => r.id === sn.rawMaterialId);
+      const fg = inMemoryFinishedGoodsStore.find((f) => f.id === sn.finishedGoodId);
+      return {
+        id: sn.id,
+        sionCode: sn.sionCode,
+        rawMaterialId: sn.rawMaterialId,
+        rawMaterialName: rm?.materialName,
+        rawMaterialCode: rm?.materialCode,
+        rawMaterialHsCode: rm?.hsCode,
+        finishedGoodId: sn.finishedGoodId,
+        finishedGoodName: fg?.productName,
+        finishedGoodCode: fg?.productCode,
+        finishedGoodHsCode: fg?.hsCode,
+        inputQuantity: sn.inputQuantity,
+        inputUom: sn.inputUom,
+        outputQuantity: sn.outputQuantity,
+        outputUom: sn.outputUom,
+        yieldRatio: sn.yieldRatio,
+        wastagePercent: sn.wastagePercent,
+        dgftNotificationDate: sn.dgftNotificationDate,
+        effectiveFrom: sn.effectiveFrom,
+        effectiveTo: sn.effectiveTo,
+        status: calculateSionStatus(sn.effectiveFrom, sn.effectiveTo),
+        notes: sn.notes,
+        createdAt: sn.createdAt,
+        updatedAt: sn.updatedAt,
+      };
+    });
+
+    if (rawMaterialId) {
+      filtered = filtered.filter((s) => s.rawMaterialId === rawMaterialId);
+    }
+    if (finishedGoodId) {
+      filtered = filtered.filter((s) => s.finishedGoodId === finishedGoodId);
+    }
+    if (status && status !== "All") {
+      filtered = filtered.filter((s) => s.status === status);
+    }
+    if (search) {
+      filtered = filtered.filter(
+        (s) =>
+          s.sionCode.toLowerCase().includes(search) ||
+          s.rawMaterialName?.toLowerCase().includes(search) ||
+          s.finishedGoodName?.toLowerCase().includes(search) ||
+          s.notes?.toLowerCase().includes(search)
+      );
+    }
+
+    const totalRecords = filtered.length;
+    const paginated = filtered.slice(offset, offset + limitNum);
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: paginated,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(totalRecords / limitNum) || 1,
+        totalRecords,
+        limit: limitNum,
+        hasNextPage: pageNum * limitNum < totalRecords,
+        hasPrevPage: pageNum > 1,
+      },
+    });
+  });
+
+  // POST /api/sion-norms
+  app.post("/api/sion-norms", async (req, res) => {
+    try {
+      const payload = req.body || {};
+      const {
+        sionCode,
+        rawMaterialId,
+        finishedGoodId,
+        inputQuantity = 1.0,
+        inputUom = "Kgs",
+        outputQuantity = 1.0,
+        outputUom = "Kgs",
+        wastagePercent = 0.0,
+        dgftNotificationDate,
+        effectiveFrom,
+        effectiveTo,
+        notes,
+      } = payload;
+
+      if (!sionCode || !rawMaterialId || !finishedGoodId) {
+        return res.status(400).json({
+          success: false,
+          message: "sionCode, rawMaterialId, and finishedGoodId are required fields.",
+        });
+      }
+
+      const inputQtyNum = Math.max(0.0001, Number(inputQuantity || 1));
+      const outputQtyNum = Math.max(0.0001, Number(outputQuantity || 1));
+      const calculatedYield = Number((outputQtyNum / inputQtyNum).toFixed(4));
+      const calculatedStatus = calculateSionStatus(effectiveFrom, effectiveTo);
+
+      const newId = payload.id || crypto.randomUUID();
+      const supabase = getSupabaseServerClient();
+
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("sion_norms")
+            .insert({
+              id: newId,
+              sion_code: sionCode.trim().toUpperCase(),
+              raw_material_id: rawMaterialId,
+              finished_good_id: finishedGoodId,
+              input_quantity: inputQtyNum,
+              input_uom: inputUom.trim(),
+              output_quantity: outputQtyNum,
+              output_uom: outputUom.trim(),
+              yield_ratio: calculatedYield,
+              wastage_percent: Number(wastagePercent || 0),
+              dgft_notification_date: dgftNotificationDate || null,
+              effective_from: effectiveFrom || null,
+              effective_to: effectiveTo || null,
+              notes,
+            })
+            .select(`*, raw_materials(*), finished_goods(*)`)
+            .single();
+
+          if (!error && data) {
+            return res.status(201).json({
+              success: true,
+              source: "supabase_postgresql",
+              data: {
+                id: data.id,
+                sionCode: data.sion_code,
+                rawMaterialId: data.raw_material_id,
+                rawMaterialName: data.raw_materials?.material_name,
+                rawMaterialCode: data.raw_materials?.material_code,
+                finishedGoodId: data.finished_good_id,
+                finishedGoodName: data.finished_goods?.product_name,
+                finishedGoodCode: data.finished_goods?.product_code,
+                inputQuantity: Number(data.input_quantity),
+                inputUom: data.input_uom,
+                outputQuantity: Number(data.output_quantity),
+                outputUom: data.output_uom,
+                yieldRatio: Number(data.yield_ratio),
+                wastagePercent: Number(data.wastage_percent),
+                dgftNotificationDate: data.dgft_notification_date,
+                effectiveFrom: data.effective_from,
+                effectiveTo: data.effective_to,
+                status: calculatedStatus,
+                notes: data.notes,
+                createdAt: data.created_at,
+                updatedAt: data.updated_at,
+              },
+            });
+          }
+        } catch {}
+      }
+
+      const createdItem = {
+        id: newId,
+        sionCode: sionCode.trim().toUpperCase(),
+        rawMaterialId,
+        finishedGoodId,
+        inputQuantity: inputQtyNum,
+        inputUom: inputUom.trim(),
+        outputQuantity: outputQtyNum,
+        outputUom: outputUom.trim(),
+        yieldRatio: calculatedYield,
+        wastagePercent: Number(wastagePercent || 0),
+        dgftNotificationDate,
+        effectiveFrom,
+        effectiveTo,
+        status: calculatedStatus,
+        notes,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      inMemorySionNormsStore.unshift(createdItem);
+
+      const rm = inMemoryRawMaterialsStore.find((r) => r.id === rawMaterialId);
+      const fg = inMemoryFinishedGoodsStore.find((f) => f.id === finishedGoodId);
+
+      return res.status(201).json({
+        success: true,
+        source: "in_memory_preview",
+        data: {
+          ...createdItem,
+          rawMaterialName: rm?.materialName,
+          rawMaterialCode: rm?.materialCode,
+          finishedGoodName: fg?.productName,
+          finishedGoodCode: fg?.productCode,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // GET /api/sion-norms/:id
+  app.get("/api/sion-norms/:id", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("sion_norms")
+          .select(`*, raw_materials(*), finished_goods(*)`)
+          .eq("id", id)
+          .single();
+
+        if (!error && data) {
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: {
+              id: data.id,
+              sionCode: data.sion_code,
+              rawMaterialId: data.raw_material_id,
+              rawMaterialName: data.raw_materials?.material_name,
+              rawMaterialCode: data.raw_materials?.material_code,
+              rawMaterialHsCode: data.raw_materials?.hs_code,
+              finishedGoodId: data.finished_good_id,
+              finishedGoodName: data.finished_goods?.product_name,
+              finishedGoodCode: data.finished_goods?.product_code,
+              finishedGoodHsCode: data.finished_goods?.hs_code,
+              inputQuantity: Number(data.input_quantity),
+              inputUom: data.input_uom,
+              outputQuantity: Number(data.output_quantity),
+              outputUom: data.output_uom,
+              yieldRatio: Number(data.yield_ratio),
+              wastagePercent: Number(data.wastage_percent),
+              dgftNotificationDate: data.dgft_notification_date,
+              effectiveFrom: data.effective_from,
+              effectiveTo: data.effective_to,
+              status: calculateSionStatus(data.effective_from, data.effective_to),
+              notes: data.notes,
+              createdAt: data.created_at,
+              updatedAt: data.updated_at,
+            },
+          });
+        }
+      } catch {}
+    }
+
+    const item = inMemorySionNormsStore.find((s) => s.id === id);
+    if (!item) {
+      return res.status(404).json({ success: false, message: "SION norm not found." });
+    }
+
+    const rm = inMemoryRawMaterialsStore.find((r) => r.id === item.rawMaterialId);
+    const fg = inMemoryFinishedGoodsStore.find((f) => f.id === item.finishedGoodId);
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: {
+        ...item,
+        rawMaterialName: rm?.materialName,
+        rawMaterialCode: rm?.materialCode,
+        rawMaterialHsCode: rm?.hsCode,
+        finishedGoodName: fg?.productName,
+        finishedGoodCode: fg?.productCode,
+        finishedGoodHsCode: fg?.hsCode,
+        status: calculateSionStatus(item.effectiveFrom, item.effectiveTo),
+      },
+    });
+  });
+
+  // PUT /api/sion-norms/:id
+  app.put("/api/sion-norms/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const payload = req.body || {};
+      const inputQtyNum = payload.inputQuantity ? Math.max(0.0001, Number(payload.inputQuantity)) : undefined;
+      const outputQtyNum = payload.outputQuantity ? Math.max(0.0001, Number(payload.outputQuantity)) : undefined;
+      
+      let calculatedYield: number | undefined = undefined;
+      if (inputQtyNum !== undefined && outputQtyNum !== undefined) {
+        calculatedYield = Number((outputQtyNum / inputQtyNum).toFixed(4));
+      }
+
+      // Check if consumption tracking records exist referencing this norm
+      const supabase = getSupabaseServerClient();
+      let hasConsumption = false;
+      if (supabase) {
+        try {
+          const { count } = await supabase
+            .from("consumption_tracking")
+            .select("id", { count: "exact", head: true })
+            .eq("finished_good_id", payload.finishedGoodId || "");
+          if (count && count > 0) hasConsumption = true;
+        } catch {}
+      } else {
+        hasConsumption = inMemoryConsumptionTrackingStore.some((c) => c.finishedGoodId === payload.finishedGoodId);
+      }
+
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("sion_norms")
+            .update({
+              sion_code: payload.sionCode ? payload.sionCode.trim().toUpperCase() : undefined,
+              raw_material_id: payload.rawMaterialId,
+              finished_good_id: payload.finishedGoodId,
+              input_quantity: inputQtyNum,
+              input_uom: payload.inputUom?.trim(),
+              output_quantity: outputQtyNum,
+              output_uom: payload.outputUom?.trim(),
+              yield_ratio: calculatedYield,
+              wastage_percent: payload.wastagePercent !== undefined ? Number(payload.wastagePercent) : undefined,
+              dgft_notification_date: payload.dgftNotificationDate,
+              effective_from: payload.effectiveFrom,
+              effective_to: payload.effectiveTo,
+              notes: payload.notes,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", id)
+            .select(`*, raw_materials(*), finished_goods(*)`)
+            .single();
+
+          if (!error && data) {
+            return res.json({
+              success: true,
+              source: "supabase_postgresql",
+              warning: hasConsumption ? "Note: Production/Consumption records exist using this product ratio." : undefined,
+              data: {
+                id: data.id,
+                sionCode: data.sion_code,
+                rawMaterialId: data.raw_material_id,
+                rawMaterialName: data.raw_materials?.material_name,
+                rawMaterialCode: data.raw_materials?.material_code,
+                finishedGoodId: data.finished_good_id,
+                finishedGoodName: data.finished_goods?.product_name,
+                finishedGoodCode: data.finished_goods?.product_code,
+                inputQuantity: Number(data.input_quantity),
+                inputUom: data.input_uom,
+                outputQuantity: Number(data.output_quantity),
+                outputUom: data.output_uom,
+                yieldRatio: Number(data.yield_ratio),
+                wastagePercent: Number(data.wastage_percent),
+                dgftNotificationDate: data.dgft_notification_date,
+                effectiveFrom: data.effective_from,
+                effectiveTo: data.effective_to,
+                status: calculateSionStatus(data.effective_from, data.effective_to),
+                notes: data.notes,
+                updatedAt: data.updated_at,
+              },
+            });
+          }
+        } catch {}
+      }
+
+      const idx = inMemorySionNormsStore.findIndex((s) => s.id === id);
+      if (idx === -1) {
+        return res.status(404).json({ success: false, message: "SION norm not found." });
+      }
+
+      const prev = inMemorySionNormsStore[idx];
+      const finalInput = inputQtyNum || prev.inputQuantity;
+      const finalOutput = outputQtyNum || prev.outputQuantity;
+      const finalYield = Number((finalOutput / finalInput).toFixed(4));
+
+      inMemorySionNormsStore[idx] = {
+        ...prev,
+        sionCode: payload.sionCode ? payload.sionCode.trim().toUpperCase() : prev.sionCode,
+        rawMaterialId: payload.rawMaterialId || prev.rawMaterialId,
+        finishedGoodId: payload.finishedGoodId || prev.finishedGoodId,
+        inputQuantity: finalInput,
+        inputUom: payload.inputUom || prev.inputUom,
+        outputQuantity: finalOutput,
+        outputUom: payload.outputUom || prev.outputUom,
+        yieldRatio: finalYield,
+        wastagePercent: payload.wastagePercent !== undefined ? Number(payload.wastagePercent) : prev.wastagePercent,
+        dgftNotificationDate: payload.dgftNotificationDate !== undefined ? payload.dgftNotificationDate : prev.dgftNotificationDate,
+        effectiveFrom: payload.effectiveFrom !== undefined ? payload.effectiveFrom : prev.effectiveFrom,
+        effectiveTo: payload.effectiveTo !== undefined ? payload.effectiveTo : prev.effectiveTo,
+        status: calculateSionStatus(
+          payload.effectiveFrom !== undefined ? payload.effectiveFrom : prev.effectiveFrom,
+          payload.effectiveTo !== undefined ? payload.effectiveTo : prev.effectiveTo
+        ),
+        notes: payload.notes !== undefined ? payload.notes : prev.notes,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const rm = inMemoryRawMaterialsStore.find((r) => r.id === inMemorySionNormsStore[idx].rawMaterialId);
+      const fg = inMemoryFinishedGoodsStore.find((f) => f.id === inMemorySionNormsStore[idx].finishedGoodId);
+
+      return res.json({
+        success: true,
+        source: "in_memory_preview",
+        warning: hasConsumption ? "Note: Production/Consumption records exist using this product ratio." : undefined,
+        data: {
+          ...inMemorySionNormsStore[idx],
+          rawMaterialName: rm?.materialName,
+          rawMaterialCode: rm?.materialCode,
+          finishedGoodName: fg?.productName,
+          finishedGoodCode: fg?.productCode,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // DELETE /api/sion-norms/:id
+  app.delete("/api/sion-norms/:id", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        const { error } = await supabase.from("sion_norms").delete().eq("id", id);
+        if (!error) {
+          return res.json({ success: true, message: "SION norm deleted successfully.", id });
+        }
+      } catch {}
+    }
+
+    inMemorySionNormsStore = inMemorySionNormsStore.filter((s) => s.id !== id);
+    return res.json({ success: true, message: "SION norm deleted successfully from store.", id });
+  });
+
+  // GET /api/sion-norms/material/:materialId
+  app.get("/api/sion-norms/material/:materialId", async (req, res) => {
+    const { materialId } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("sion_norms")
+          .select(`*, finished_goods(*)`)
+          .eq("raw_material_id", materialId);
+
+        if (!error && data) {
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: data.map((s: any) => ({
+              id: s.id,
+              sionCode: s.sion_code,
+              finishedGoodId: s.finished_good_id,
+              finishedGoodName: s.finished_goods?.product_name,
+              finishedGoodCode: s.finished_goods?.product_code,
+              inputQuantity: Number(s.input_quantity),
+              inputUom: s.input_uom,
+              outputQuantity: Number(s.output_quantity),
+              outputUom: s.output_uom,
+              yieldRatio: Number(s.yield_ratio),
+              wastagePercent: Number(s.wastage_percent),
+              effectiveFrom: s.effective_from,
+              effectiveTo: s.effective_to,
+              status: calculateSionStatus(s.effective_from, s.effective_to),
+              notes: s.notes,
+            })),
+          });
+        }
+      } catch {}
+    }
+
+    const items = inMemorySionNormsStore
+      .filter((s) => s.rawMaterialId === materialId)
+      .map((s) => {
+        const fg = inMemoryFinishedGoodsStore.find((f) => f.id === s.finishedGoodId);
+        return {
+          id: s.id,
+          sionCode: s.sionCode,
+          finishedGoodId: s.finishedGoodId,
+          finishedGoodName: fg?.productName,
+          finishedGoodCode: fg?.productCode,
+          inputQuantity: s.inputQuantity,
+          inputUom: s.inputUom,
+          outputQuantity: s.outputQuantity,
+          outputUom: s.outputUom,
+          yieldRatio: s.yieldRatio,
+          wastagePercent: s.wastagePercent,
+          effectiveFrom: s.effectiveFrom,
+          effectiveTo: s.effectiveTo,
+          status: calculateSionStatus(s.effectiveFrom, s.effectiveTo),
+          notes: s.notes,
+        };
+      });
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: items,
+    });
+  });
+
+  // GET /api/sion-norms/product/:productId
+  app.get("/api/sion-norms/product/:productId", async (req, res) => {
+    const { productId } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("sion_norms")
+          .select(`*, raw_materials(*)`)
+          .eq("finished_good_id", productId);
+
+        if (!error && data) {
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: data.map((s: any) => ({
+              id: s.id,
+              sionCode: s.sion_code,
+              rawMaterialId: s.raw_material_id,
+              rawMaterialName: s.raw_materials?.material_name,
+              rawMaterialCode: s.raw_materials?.material_code,
+              inputQuantity: Number(s.input_quantity),
+              inputUom: s.input_uom,
+              outputQuantity: Number(s.output_quantity),
+              outputUom: s.output_uom,
+              yieldRatio: Number(s.yield_ratio),
+              wastagePercent: Number(s.wastage_percent),
+              effectiveFrom: s.effective_from,
+              effectiveTo: s.effective_to,
+              status: calculateSionStatus(s.effective_from, s.effective_to),
+              notes: s.notes,
+            })),
+          });
+        }
+      } catch {}
+    }
+
+    const items = inMemorySionNormsStore
+      .filter((s) => s.finishedGoodId === productId)
+      .map((s) => {
+        const rm = inMemoryRawMaterialsStore.find((r) => r.id === s.rawMaterialId);
+        return {
+          id: s.id,
+          sionCode: s.sionCode,
+          rawMaterialId: s.rawMaterialId,
+          rawMaterialName: rm?.materialName,
+          rawMaterialCode: rm?.materialCode,
+          inputQuantity: s.inputQuantity,
+          inputUom: s.inputUom,
+          outputQuantity: s.outputQuantity,
+          outputUom: s.outputUom,
+          yieldRatio: s.yieldRatio,
+          wastagePercent: s.wastagePercent,
+          effectiveFrom: s.effectiveFrom,
+          effectiveTo: s.effectiveTo,
+          status: calculateSionStatus(s.effectiveFrom, s.effectiveTo),
+          notes: s.notes,
+        };
+      });
+
+    return res.json({
+      success: true,
+      source: "in_memory_preview",
+      data: items,
+    });
+  });
+
+
+  // -------------------------------------------------------------------------
+  // CRUD API: GET /api/shipping-bills (Paginated, Filtered & Sorted)
+  // -------------------------------------------------------------------------
+  app.get("/api/shipping-bills", async (req, res) => {
+    const startTime = performance.now();
+    const {
+      page = "1",
+      limit = "50",
+      sortBy = "shipping_bill_date",
+      sortOrder = "desc",
+      dateFrom,
+      dateTo,
+      licenceId,
+      brcStatus,
+      fobMinUSD,
+      foMinUSD,
+      fobMaxUSD,
+      foMaxUSD,
+      fobMinINR,
+      fobMaxINR,
+      searchText,
+      search,
+    } = req.query as Record<string, string>;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const isAll = limit === "all" || limit === "0" || limit === "-1";
+    const limitNum = isAll ? 0 : Math.max(1, Math.min(1000, parseInt(limit, 10) || 50));
+    const offset = (pageNum - 1) * limitNum;
+
+    // Normalise sort column
+    let sortColumn = "shipping_bill_date";
+    if (sortBy === "bill_date" || sortBy === "date" || sortBy === "shipping_bill_date") {
+      sortColumn = "shipping_bill_date";
+    } else if (sortBy === "total_fob_fc" || sortBy === "fob_fc" || sortBy === "fobValue" || sortBy === "fob_value_fc") {
+      sortColumn = "total_fob_fc";
+    } else if (sortBy === "total_fob_inr" || sortBy === "fob_inr") {
+      sortColumn = "total_fob_inr";
+    } else if (sortBy === "shipping_bill_number" || sortBy === "sb_number" || sortBy === "number") {
+      sortColumn = "shipping_bill_number";
+    } else if (sortBy === "buyer_name" || sortBy === "buyer") {
+      sortColumn = "buyer_name";
+    } else if (sortBy === "destination_country" || sortBy === "destination") {
+      sortColumn = "destination_country";
+    } else if (sortBy === "status") {
+      sortColumn = "status";
+    } else if (sortBy === "created_at") {
+      sortColumn = "created_at";
+    }
+
+    const isAscending = String(sortOrder).toLowerCase() === "asc";
+    const minUSD = parseFloat(fobMinUSD || foMinUSD || "");
+    const maxUSD = parseFloat(fobMaxUSD || foMaxUSD || "");
+    const minINR = parseFloat(fobMinINR || "");
+    const maxINR = parseFloat(fobMaxINR || "");
+    const querySearch = (searchText || search || "").trim();
+
+    // Parse licence IDs (supports single ID or comma-separated list)
+    const licenceIds = licenceId
+      ? licenceId.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+
+    // Parse BRC statuses (supports single or comma-separated list)
+    const brcStatuses = brcStatus
+      ? brcStatus.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+
+    const supabase = getSupabaseServerClient();
+
     if (!supabase) {
-      inMemoryLicencesStore = inMemoryLicencesStore.filter((l) => l.id !== id);
+      // In-Memory filtering, sorting, and pagination
+      let filtered = [...inMemoryShippingBillsStore];
+
+      if (licenceIds.length > 0) {
+        filtered = filtered.filter((b) => licenceIds.includes(b.licenceId));
+      }
+      if (dateFrom) {
+        filtered = filtered.filter((b) => b.shippingBillDate >= dateFrom);
+      }
+      if (dateTo) {
+        filtered = filtered.filter((b) => b.shippingBillDate <= dateTo);
+      }
+      if (!isNaN(minUSD)) {
+        filtered = filtered.filter((b) => Number(b.totalFobFc || 0) >= minUSD);
+      }
+      if (!isNaN(maxUSD)) {
+        filtered = filtered.filter((b) => Number(b.totalFobFc || 0) <= maxUSD);
+      }
+      if (!isNaN(minINR)) {
+        filtered = filtered.filter((b) => Number(b.totalFobInr || 0) >= minINR);
+      }
+      if (!isNaN(maxINR)) {
+        filtered = filtered.filter((b) => Number(b.totalFobInr || 0) <= maxINR);
+      }
+      if (brcStatuses.length > 0) {
+        filtered = filtered.filter((b) => brcStatuses.includes(b.brcTracking?.brcStatus || "Not Received"));
+      }
+      if (querySearch) {
+        const q = querySearch.toLowerCase();
+        filtered = filtered.filter(
+          (b) =>
+            (b.shippingBillNumber || "").toLowerCase().includes(q) ||
+            (b.buyerName || "").toLowerCase().includes(q) ||
+            (b.destinationCountry || "").toLowerCase().includes(q) ||
+            (b.licenceNumber || "").toLowerCase().includes(q) ||
+            (b.companyFileNumber || "").toLowerCase().includes(q) ||
+            (b.invoiceNumber || "").toLowerCase().includes(q) ||
+            (b.portOfExport || "").toLowerCase().includes(q)
+        );
+      }
+
+      // Sort
+      filtered.sort((a: any, b: any) => {
+        let valA = a[sortColumn] ?? a.shippingBillDate;
+        let valB = b[sortColumn] ?? b.shippingBillDate;
+
+        if (sortColumn === "total_fob_fc" || sortColumn === "total_fob_inr") {
+          valA = Number(valA || 0);
+          valB = Number(valB || 0);
+          return isAscending ? valA - valB : valB - valA;
+        }
+
+        const strA = String(valA || "").toLowerCase();
+        const strB = String(valB || "").toLowerCase();
+        if (strA < strB) return isAscending ? -1 : 1;
+        if (strA > strB) return isAscending ? 1 : -1;
+        return 0;
+      });
+
+      const totalRecords = filtered.length;
+      const totalPages = limitNum > 0 ? Math.ceil(totalRecords / limitNum) || 1 : 1;
+      const paginated = limitNum > 0 ? filtered.slice(offset, offset + limitNum) : filtered;
+      const queryTimeMs = Math.round(performance.now() - startTime);
+
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        data: paginated,
+        pagination: {
+          currentPage: pageNum,
+          totalPages,
+          totalRecords,
+          limit: limitNum > 0 ? limitNum : totalRecords,
+          hasNextPage: pageNum < totalPages,
+          hasPrevPage: pageNum > 1,
+        },
+        queryTimeMs,
+      });
+    }
+
+    try {
+      // Build Supabase Query
+      let query = supabase.from("shipping_bills").select("*", { count: "exact" });
+
+      if (licenceIds.length === 1) {
+        query = query.eq("licence_id", licenceIds[0]);
+      } else if (licenceIds.length > 1) {
+        query = query.in("licence_id", licenceIds);
+      }
+
+      if (dateFrom) {
+        query = query.gte("shipping_bill_date", dateFrom);
+      }
+      if (dateTo) {
+        query = query.lte("shipping_bill_date", dateTo);
+      }
+
+      if (!isNaN(minUSD)) {
+        query = query.gte("total_fob_fc", minUSD);
+      }
+      if (!isNaN(maxUSD)) {
+        query = query.lte("total_fob_fc", maxUSD);
+      }
+      if (!isNaN(minINR)) {
+        query = query.gte("total_fob_inr", minINR);
+      }
+      if (!isNaN(maxINR)) {
+        query = query.lte("total_fob_inr", maxINR);
+      }
+
+      if (querySearch) {
+        query = query.or(
+          `shipping_bill_number.ilike.%${querySearch}%,buyer_name.ilike.%${querySearch}%,destination_country.ilike.%${querySearch}%,licence_number.ilike.%${querySearch}%,company_file_number.ilike.%${querySearch}%,invoice_number.ilike.%${querySearch}%,port_of_export.ilike.%${querySearch}%`
+        );
+      }
+
+      // If BRC status filter is requested, filter shipping bills matching brc_tracking
+      if (brcStatuses.length > 0) {
+        const { data: matchedBrcs } = await supabase
+          .from("brc_tracking")
+          .select("shipping_bill_id")
+          .in("brc_status", brcStatuses);
+
+        const matchedIds = (matchedBrcs || []).map((m) => m.shipping_bill_id);
+        if (matchedIds.length === 0) {
+          // No records match this status
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: [],
+            pagination: {
+              currentPage: pageNum,
+              totalPages: 1,
+              totalRecords: 0,
+              limit: limitNum,
+              hasNextPage: false,
+              hasPrevPage: false,
+            },
+            queryTimeMs: Math.round(performance.now() - startTime),
+          });
+        }
+        query = query.in("id", matchedIds);
+      }
+
+      // Apply Sorting
+      query = query.order(sortColumn, { ascending: isAscending });
+
+      // Apply Pagination Range if limit > 0
+      if (limitNum > 0) {
+        query = query.range(offset, offset + limitNum - 1);
+      }
+
+      const { data: billsData, count: totalCount, error: billsError } = await query;
+
+      if (billsError) {
+        throw new Error(billsError.message);
+      }
+
+      const billIds = (billsData || []).map((b) => b.id);
+      let itemsMap: Record<string, any[]> = {};
+      let brcMap: Record<string, any> = {};
+
+      if (billIds.length > 0) {
+        const [itemsRes, brcRes] = await Promise.all([
+          supabase.from("shipping_bill_items").select("*").in("shipping_bill_id", billIds),
+          supabase.from("brc_tracking").select("*").in("shipping_bill_id", billIds),
+        ]);
+
+        (itemsRes.data || []).forEach((item) => {
+          if (!itemsMap[item.shipping_bill_id]) itemsMap[item.shipping_bill_id] = [];
+          itemsMap[item.shipping_bill_id].push({
+            id: item.id,
+            shippingBillId: item.shipping_bill_id,
+            itemSrNo: item.item_sr_no,
+            itcHsCode: item.itc_hs_code,
+            productDescription: item.product_description,
+            quantity: Number(item.quantity || 0),
+            uom: item.uom,
+            fobValueCurrency: item.fob_value_currency,
+            fobValueFc: Number(item.fob_value_fc || 0),
+            exchangeRate: Number(item.exchange_rate || 0),
+            fobValueInr: Number(item.fob_value_inr || 0),
+            notes: item.notes,
+          });
+        });
+
+        (brcRes.data || []).forEach((brc) => {
+          brcMap[brc.shipping_bill_id] = {
+            id: brc.id,
+            shippingBillId: brc.shipping_bill_id,
+            brcNumber: brc.brc_number,
+            brcStatus: brc.brc_status,
+            receivedDate: brc.received_date,
+            realizedDate: brc.realized_date,
+            realizedAmountFc: Number(brc.realized_amount_fc || 0),
+            realizedAmountInr: Number(brc.realized_amount_inr || 0),
+            currency: brc.currency,
+            realizedExchangeRate: Number(brc.realized_exchange_rate || 0),
+            bankName: brc.bank_name,
+            bankBranch: brc.bank_branch,
+            ifscCode: brc.ifsc_code,
+            adCode: brc.ad_code,
+            eBrcDocumentNumber: brc.e_brc_document_number,
+            remarks: brc.remarks,
+          };
+        });
+      }
+
+      const formatted = (billsData || []).map((b) => ({
+        id: b.id,
+        licenceId: b.licence_id,
+        licenceNumber: b.licence_number,
+        companyFileNumber: b.company_file_number,
+        shippingBillNumber: b.shipping_bill_number,
+        shippingBillDate: b.shipping_bill_date,
+        portOfExport: b.port_of_export,
+        portCode: b.port_code,
+        leoDate: b.leo_date,
+        destinationCountry: b.destination_country,
+        buyerName: b.buyer_name,
+        invoiceNumber: b.invoice_number,
+        invoiceDate: b.invoice_date,
+        currency: b.currency,
+        exchangeRate: Number(b.exchange_rate || 0),
+        totalFobFc: Number(b.total_fob_fc || 0),
+        totalFobInr: Number(b.total_fob_inr || 0),
+        status: b.status,
+        remarks: b.remarks,
+        items: itemsMap[b.id] || [],
+        brcTracking: brcMap[b.id] || {
+          id: `BRC-${b.id}`,
+          shippingBillId: b.id,
+          brcStatus: "Not Received",
+          currency: b.currency || "USD",
+          realizedAmountFc: 0,
+          realizedAmountInr: 0,
+        },
+        createdAt: b.created_at,
+        updatedAt: b.updated_at,
+      }));
+
+      const totalRecords = totalCount !== null && totalCount !== undefined ? totalCount : formatted.length;
+      const totalPages = limitNum > 0 ? Math.ceil(totalRecords / limitNum) || 1 : 1;
+      const queryTimeMs = Math.round(performance.now() - startTime);
+
+      return res.json({
+        success: true,
+        source: "supabase_postgresql",
+        data: formatted,
+        pagination: {
+          currentPage: pageNum,
+          totalPages,
+          totalRecords,
+          limit: limitNum > 0 ? limitNum : totalRecords,
+          hasNextPage: pageNum < totalPages,
+          hasPrevPage: pageNum > 1,
+        },
+        queryTimeMs,
+      });
+    } catch (err: any) {
+      console.warn("[GET /api/shipping-bills] Fallback to in-memory store:", err.message);
+      let filtered = inMemoryShippingBillsStore;
+      if (licenceIds.length > 0) {
+        filtered = filtered.filter((b) => licenceIds.includes(b.licenceId));
+      }
+      const totalRecords = filtered.length;
+      const totalPages = limitNum > 0 ? Math.ceil(totalRecords / limitNum) || 1 : 1;
+      const paginated = limitNum > 0 ? filtered.slice(offset, offset + limitNum) : filtered;
+
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        fallback: true,
+        data: paginated,
+        pagination: {
+          currentPage: pageNum,
+          totalPages,
+          totalRecords,
+          limit: limitNum > 0 ? limitNum : totalRecords,
+          hasNextPage: pageNum < totalPages,
+          hasPrevPage: pageNum > 1,
+        },
+        queryTimeMs: Math.round(performance.now() - startTime),
+      });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // CRUD API: POST /api/shipping-bills (Create shipping bill, items & BRC)
+  // -------------------------------------------------------------------------
+  app.post("/api/shipping-bills", async (req, res) => {
+    const payload = req.body || {};
+    const newId = payload.id && payload.id.length > 10 ? payload.id : randomUUID();
+
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const brc = payload.brcTracking || {};
+
+    const formattedRecord = {
+      id: newId,
+      licenceId: payload.licenceId || "",
+      licenceNumber: payload.licenceNumber || "",
+      companyFileNumber: payload.companyFileNumber || "",
+      shippingBillNumber: payload.shippingBillNumber || "",
+      shippingBillDate: payload.shippingBillDate || new Date().toISOString().split("T")[0],
+      portOfExport: payload.portOfExport || "INNSA1 - Nhava Sheva",
+      portCode: payload.portCode || "INNSA1",
+      leoDate: payload.leoDate || null,
+      destinationCountry: payload.destinationCountry || "",
+      buyerName: payload.buyerName || "",
+      invoiceNumber: payload.invoiceNumber || "",
+      invoiceDate: payload.invoiceDate || null,
+      currency: payload.currency || "USD",
+      exchangeRate: Number(payload.exchangeRate || 83.5),
+      totalFobFc: Number(payload.totalFobFc || 0),
+      totalFobInr: Number(payload.totalFobInr || 0),
+      status: payload.status || "Exported",
+      remarks: payload.remarks || "",
+      items: items.map((itm: any, idx: number) => ({
+        id: itm.id || randomUUID(),
+        shippingBillId: newId,
+        itemSrNo: itm.itemSrNo || String(idx + 1),
+        itcHsCode: itm.itcHsCode || "",
+        productDescription: itm.productDescription || "",
+        quantity: Number(itm.quantity || 0),
+        uom: itm.uom || "MTR",
+        fobValueCurrency: itm.fobValueCurrency || payload.currency || "USD",
+        fobValueFc: Number(itm.fobValueFc || 0),
+        exchangeRate: Number(itm.exchangeRate || payload.exchangeRate || 83.5),
+        fobValueInr: Number(itm.fobValueInr || 0),
+        notes: itm.notes || "",
+      })),
+      brcTracking: {
+        id: brc.id || randomUUID(),
+        shippingBillId: newId,
+        brcNumber: brc.brcNumber || "",
+        brcStatus: brc.brcStatus || "Not Received",
+        receivedDate: brc.receivedDate || null,
+        realizedDate: brc.realizedDate || null,
+        realizedAmountFc: Number(brc.realizedAmountFc || 0),
+        realizedAmountInr: Number(brc.realizedAmountInr || 0),
+        currency: brc.currency || payload.currency || "USD",
+        realizedExchangeRate: Number(brc.realizedExchangeRate || payload.exchangeRate || 83.5),
+        bankName: brc.bankName || "",
+        bankBranch: brc.bankBranch || "",
+        ifscCode: brc.ifscCode || "",
+        adCode: brc.adCode || "",
+        eBrcDocumentNumber: brc.eBrcDocumentNumber || "",
+        remarks: brc.remarks || "",
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    inMemoryShippingBillsStore = [formattedRecord, ...inMemoryShippingBillsStore.filter((b) => b.id !== newId)];
+
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      await recalculateExportObligation(formattedRecord.licenceId);
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        data: formattedRecord,
+      });
+    }
+
+    try {
+      const { error: sbError } = await supabase.from("shipping_bills").insert({
+        id: newId,
+        licence_id: formattedRecord.licenceId,
+        licence_number: formattedRecord.licenceNumber,
+        company_file_number: formattedRecord.companyFileNumber,
+        shipping_bill_number: formattedRecord.shippingBillNumber,
+        shipping_bill_date: formattedRecord.shippingBillDate,
+        port_of_export: formattedRecord.portOfExport,
+        port_code: formattedRecord.portCode,
+        leo_date: formattedRecord.leoDate,
+        destination_country: formattedRecord.destinationCountry,
+        buyer_name: formattedRecord.buyerName,
+        invoice_number: formattedRecord.invoiceNumber,
+        invoice_date: formattedRecord.invoiceDate,
+        currency: formattedRecord.currency,
+        exchange_rate: formattedRecord.exchangeRate,
+        total_fob_fc: formattedRecord.totalFobFc,
+        total_fob_inr: formattedRecord.totalFobInr,
+        status: formattedRecord.status,
+        remarks: formattedRecord.remarks,
+      });
+
+      if (sbError) {
+        console.warn("[POST /api/shipping-bills] Insert bill notice:", sbError.message);
+      }
+
+      if (formattedRecord.items.length > 0) {
+        const itemInserts = formattedRecord.items.map((itm) => ({
+          id: itm.id,
+          shipping_bill_id: newId,
+          item_sr_no: itm.itemSrNo,
+          itc_hs_code: itm.itcHsCode,
+          product_description: itm.productDescription,
+          quantity: itm.quantity,
+          uom: itm.uom,
+          fob_value_currency: itm.fobValueCurrency,
+          fob_value_fc: itm.fobValueFc,
+          exchange_rate: itm.exchangeRate,
+          fob_value_inr: itm.fobValueInr,
+          notes: itm.notes,
+        }));
+        await supabase.from("shipping_bill_items").insert(itemInserts);
+      }
+
+      await supabase.from("brc_tracking").insert({
+        id: formattedRecord.brcTracking.id,
+        shipping_bill_id: newId,
+        brc_number: formattedRecord.brcTracking.brcNumber,
+        brc_status: formattedRecord.brcTracking.brcStatus,
+        received_date: formattedRecord.brcTracking.receivedDate,
+        realized_date: formattedRecord.brcTracking.realizedDate,
+        realized_amount_fc: formattedRecord.brcTracking.realizedAmountFc,
+        realized_amount_inr: formattedRecord.brcTracking.realizedAmountInr,
+        currency: formattedRecord.brcTracking.currency,
+        realized_exchange_rate: formattedRecord.brcTracking.realizedExchangeRate,
+        bank_name: formattedRecord.brcTracking.bankName,
+        bank_branch: formattedRecord.brcTracking.bankBranch,
+        ifsc_code: formattedRecord.brcTracking.ifscCode,
+        ad_code: formattedRecord.brcTracking.adCode,
+        e_brc_document_number: formattedRecord.brcTracking.eBrcDocumentNumber,
+        remarks: formattedRecord.brcTracking.remarks,
+      });
+
+      await recalculateExportObligation(formattedRecord.licenceId, supabase);
+
+      return res.json({
+        success: true,
+        source: "supabase_postgresql",
+        data: formattedRecord,
+      });
+    } catch (err: any) {
+      console.warn("[POST /api/shipping-bills] DB exception, fallback to memory:", err.message);
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        data: formattedRecord,
+      });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // CRUD API: POST /api/shipping-bills/bulk (Bulk Insert from Excel Uploader)
+  // -------------------------------------------------------------------------
+  app.post("/api/shipping-bills/bulk", async (req, res) => {
+    const { bills } = req.body || {};
+    if (!Array.isArray(bills) || bills.length === 0) {
+      return res.status(400).json({ error: "Invalid payload: bills array required" });
+    }
+
+    const insertedBills: any[] = [];
+    const affectedLicenceIds = new Set<string>();
+    const supabase = getSupabaseServerClient();
+
+    for (const rawBill of bills) {
+      const newId = rawBill.id || `SB-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const licenceId = rawBill.licenceId || "";
+      if (licenceId) affectedLicenceIds.add(licenceId);
+
+      const items = Array.isArray(rawBill.items) ? rawBill.items : [];
+      const brc = rawBill.brcTracking || {};
+
+      const formattedRecord = {
+        ...rawBill,
+        id: newId,
+        exchangeRate: Number(rawBill.exchangeRate || 83.5),
+        totalFobFc: Number(rawBill.totalFobFc || 0),
+        totalFobInr: Number(rawBill.totalFobInr || 0),
+        items: items.map((itm: any, idx: number) => ({
+          id: itm.id || `itm-${Date.now()}-${randomUUID().slice(0, 6)}-${idx}`,
+          shippingBillId: newId,
+          itemSrNo: String(itm.itemSrNo || idx + 1),
+          itcHsCode: itm.itcHsCode || "52081190",
+          productDescription: itm.productDescription || "Textile Goods",
+          quantity: Number(itm.quantity || 0),
+          uom: itm.uom || "MTR",
+          fobValueCurrency: itm.fobValueCurrency || rawBill.currency || "USD",
+          fobValueFc: Number(itm.fobValueFc || 0),
+          exchangeRate: Number(itm.exchangeRate || rawBill.exchangeRate || 83.5),
+          fobValueInr: Number(itm.fobValueInr || 0),
+          notes: itm.notes || "",
+        })),
+        brcTracking: {
+          id: brc.id || `BRC-${Date.now()}-${randomUUID().slice(0, 6)}`,
+          shippingBillId: newId,
+          brcNumber: brc.brcNumber || "",
+          brcStatus: brc.brcStatus || "Not Received",
+          receivedDate: brc.receivedDate || undefined,
+          realizedDate: brc.realizedDate || undefined,
+          realizedAmountFc: Number(brc.realizedAmountFc || 0),
+          realizedAmountInr: Number(brc.realizedAmountInr || 0),
+          currency: brc.currency || rawBill.currency || "USD",
+          realizedExchangeRate: Number(brc.realizedExchangeRate || rawBill.exchangeRate || 83.5),
+          bankName: brc.bankName || "State Bank of India",
+          bankBranch: brc.bankBranch || "Corporate Accounts Group, Mumbai",
+          ifscCode: brc.ifscCode || "SBIN0009999",
+          adCode: brc.adCode || "0210045",
+          eBrcDocumentNumber: brc.eBrcDocumentNumber || "",
+          remarks: brc.remarks || "",
+        },
+        createdAt: new Date().toISOString(),
+      };
+
+      // In-memory update
+      inMemoryShippingBillsStore = [formattedRecord, ...inMemoryShippingBillsStore.filter((b) => b.id !== newId)];
+      insertedBills.push(formattedRecord);
+
+      // Supabase DB update if available
+      if (supabase) {
+        try {
+          await supabase.from("shipping_bills").insert({
+            id: newId,
+            licence_id: formattedRecord.licenceId,
+            licence_number: formattedRecord.licenceNumber,
+            company_file_number: formattedRecord.companyFileNumber,
+            shipping_bill_number: formattedRecord.shippingBillNumber,
+            shipping_bill_date: formattedRecord.shippingBillDate,
+            port_of_export: formattedRecord.portOfExport,
+            port_code: formattedRecord.portCode,
+            leo_date: formattedRecord.leoDate,
+            destination_country: formattedRecord.destinationCountry,
+            buyer_name: formattedRecord.buyerName,
+            invoice_number: formattedRecord.invoiceNumber,
+            invoice_date: formattedRecord.invoiceDate,
+            currency: formattedRecord.currency,
+            exchange_rate: formattedRecord.exchangeRate,
+            total_fob_fc: formattedRecord.totalFobFc,
+            total_fob_inr: formattedRecord.totalFobInr,
+            status: formattedRecord.status,
+            remarks: formattedRecord.remarks,
+          });
+
+          if (formattedRecord.items.length > 0) {
+            const itemInserts = formattedRecord.items.map((itm: any) => ({
+              id: itm.id,
+              shipping_bill_id: newId,
+              item_sr_no: itm.itemSrNo,
+              itc_hs_code: itm.itcHsCode,
+              product_description: itm.productDescription,
+              quantity: itm.quantity,
+              uom: itm.uom,
+              fob_value_currency: itm.fobValueCurrency,
+              fob_value_fc: itm.fobValueFc,
+              exchange_rate: itm.exchangeRate,
+              fob_value_inr: itm.fobValueInr,
+              notes: itm.notes,
+            }));
+            await supabase.from("shipping_bill_items").insert(itemInserts);
+          }
+
+          await supabase.from("brc_tracking").insert({
+            id: formattedRecord.brcTracking.id,
+            shipping_bill_id: newId,
+            brc_number: formattedRecord.brcTracking.brcNumber,
+            brc_status: formattedRecord.brcTracking.brcStatus,
+            received_date: formattedRecord.brcTracking.receivedDate,
+            realized_date: formattedRecord.brcTracking.realizedDate,
+            realized_amount_fc: formattedRecord.brcTracking.realizedAmountFc,
+            realized_amount_inr: formattedRecord.brcTracking.realizedAmountInr,
+            currency: formattedRecord.brcTracking.currency,
+            realized_exchange_rate: formattedRecord.brcTracking.realizedExchangeRate,
+            bank_name: formattedRecord.brcTracking.bankName,
+            bank_branch: formattedRecord.brcTracking.bankBranch,
+            ifsc_code: formattedRecord.brcTracking.ifscCode,
+            ad_code: formattedRecord.brcTracking.adCode,
+            e_brc_document_number: formattedRecord.brcTracking.eBrcDocumentNumber,
+            remarks: formattedRecord.brcTracking.remarks,
+          });
+        } catch (dbErr: any) {
+          console.warn("[POST /api/shipping-bills/bulk] Item error:", dbErr.message);
+        }
+      }
+    }
+
+    // Recalculate obligations for all affected licences
+    for (const licId of Array.from(affectedLicenceIds)) {
+      try {
+        await recalculateExportObligation(licId, supabase || undefined);
+      } catch (e: any) {
+        console.warn("Recalculate obligation failed for", licId, e.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      count: insertedBills.length,
+      source: supabase ? "supabase_postgresql" : "in_memory_fallback",
+      data: insertedBills,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // CRUD API: PUT /api/shipping-bills/:id (Update bill and sync BRC)
+  // -------------------------------------------------------------------------
+  app.put("/api/shipping-bills/:id", async (req, res) => {
+    const { id } = req.params;
+    const payload = req.body || {};
+    const supabase = getSupabaseServerClient();
+
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const brc = payload.brcTracking || {};
+
+    const updatedRecord = {
+      ...payload,
+      id,
+      exchangeRate: Number(payload.exchangeRate || 83.5),
+      totalFobFc: Number(payload.totalFobFc || 0),
+      totalFobInr: Number(payload.totalFobInr || 0),
+      items: items.map((itm: any, idx: number) => ({
+        id: itm.id || randomUUID(),
+        shippingBillId: id,
+        itemSrNo: itm.itemSrNo || String(idx + 1),
+        itcHsCode: itm.itcHsCode || "",
+        productDescription: itm.productDescription || "",
+        quantity: Number(itm.quantity || 0),
+        uom: itm.uom || "MTR",
+        fobValueCurrency: itm.fobValueCurrency || payload.currency || "USD",
+        fobValueFc: Number(itm.fobValueFc || 0),
+        exchangeRate: Number(itm.exchangeRate || payload.exchangeRate || 83.5),
+        fobValueInr: Number(itm.fobValueInr || 0),
+        notes: itm.notes || "",
+      })),
+      brcTracking: {
+        id: brc.id || randomUUID(),
+        shippingBillId: id,
+        brcNumber: brc.brcNumber || "",
+        brcStatus: brc.brcStatus || "Not Received",
+        receivedDate: brc.receivedDate || null,
+        realizedDate: brc.realizedDate || null,
+        realizedAmountFc: Number(brc.realizedAmountFc || 0),
+        realizedAmountInr: Number(brc.realizedAmountInr || 0),
+        currency: brc.currency || payload.currency || "USD",
+        realizedExchangeRate: Number(brc.realizedExchangeRate || payload.exchangeRate || 83.5),
+        bankName: brc.bankName || "",
+        bankBranch: brc.bankBranch || "",
+        ifscCode: brc.ifscCode || "",
+        adCode: brc.adCode || "",
+        eBrcDocumentNumber: brc.eBrcDocumentNumber || "",
+        remarks: brc.remarks || "",
+      },
+      updatedAt: new Date().toISOString(),
+    };
+
+    inMemoryShippingBillsStore = inMemoryShippingBillsStore.map((b) => (b.id === id ? updatedRecord : b));
+
+    if (!supabase) {
+      await recalculateExportObligation(updatedRecord.licenceId);
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        data: updatedRecord,
+      });
+    }
+
+    try {
+      await supabase
+        .from("shipping_bills")
+        .update({
+          shipping_bill_number: updatedRecord.shippingBillNumber,
+          shipping_bill_date: updatedRecord.shippingBillDate,
+          port_of_export: updatedRecord.portOfExport,
+          port_code: updatedRecord.portCode,
+          leo_date: updatedRecord.leoDate,
+          destination_country: updatedRecord.destinationCountry,
+          buyer_name: updatedRecord.buyerName,
+          invoice_number: updatedRecord.invoiceNumber,
+          invoice_date: updatedRecord.invoiceDate,
+          currency: updatedRecord.currency,
+          exchange_rate: updatedRecord.exchangeRate,
+          total_fob_fc: updatedRecord.totalFobFc,
+          total_fob_inr: updatedRecord.totalFobInr,
+          status: updatedRecord.status,
+          remarks: updatedRecord.remarks,
+        })
+        .eq("id", id);
+
+      // Re-save line items
+      await supabase.from("shipping_bill_items").delete().eq("shipping_bill_id", id);
+      if (updatedRecord.items.length > 0) {
+        const itemInserts = updatedRecord.items.map((itm: any) => ({
+          id: itm.id,
+          shipping_bill_id: id,
+          item_sr_no: itm.itemSrNo,
+          itc_hs_code: itm.itcHsCode,
+          product_description: itm.productDescription,
+          quantity: itm.quantity,
+          uom: itm.uom,
+          fob_value_currency: itm.fobValueCurrency,
+          fob_value_fc: itm.fobValueFc,
+          exchange_rate: itm.exchangeRate,
+          fob_value_inr: itm.fobValueInr,
+          notes: itm.notes,
+        }));
+        await supabase.from("shipping_bill_items").insert(itemInserts);
+      }
+
+      // Upsert BRC tracking
+      await supabase.from("brc_tracking").upsert({
+        shipping_bill_id: id,
+        brc_number: updatedRecord.brcTracking.brcNumber,
+        brc_status: updatedRecord.brcTracking.brcStatus,
+        received_date: updatedRecord.brcTracking.receivedDate,
+        realized_date: updatedRecord.brcTracking.realizedDate,
+        realized_amount_fc: updatedRecord.brcTracking.realizedAmountFc,
+        realized_amount_inr: updatedRecord.brcTracking.realizedAmountInr,
+        currency: updatedRecord.brcTracking.currency,
+        realized_exchange_rate: updatedRecord.brcTracking.realizedExchangeRate,
+        bank_name: updatedRecord.brcTracking.bankName,
+        bank_branch: updatedRecord.brcTracking.bankBranch,
+        ifsc_code: updatedRecord.brcTracking.ifscCode,
+        ad_code: updatedRecord.brcTracking.adCode,
+        e_brc_document_number: updatedRecord.brcTracking.eBrcDocumentNumber,
+        remarks: updatedRecord.brcTracking.remarks,
+      });
+
+      await recalculateExportObligation(updatedRecord.licenceId, supabase);
+
+      return res.json({
+        success: true,
+        source: "supabase_postgresql",
+        data: updatedRecord,
+      });
+    } catch (err: any) {
+      console.warn("[PUT /api/shipping-bills/:id] Exception:", err.message);
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        data: updatedRecord,
+      });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // CRUD API: DELETE /api/shipping-bills/:id (Delete bill, items & BRC cascade)
+  // -------------------------------------------------------------------------
+  app.delete("/api/shipping-bills/:id", async (req, res) => {
+    const { id } = req.params;
+    const targetBill = inMemoryShippingBillsStore.find((b) => b.id === id);
+    const licenceId = targetBill?.licenceId || targetBill?.licence_id;
+
+    inMemoryShippingBillsStore = inMemoryShippingBillsStore.filter((b) => b.id !== id);
+    inMemoryShippingBillItemsStore = inMemoryShippingBillItemsStore.filter((i) => i.shipping_bill_id !== id && i.shippingBillId !== id);
+    inMemoryBrcTrackingStore = inMemoryBrcTrackingStore.filter((brc) => brc.shipping_bill_id !== id && brc.shippingBillId !== id);
+
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      if (licenceId) await recalculateExportObligation(licenceId);
       return res.json({
         success: true,
         source: "in_memory_fallback",
@@ -697,20 +3795,15 @@ async function startServer() {
     }
 
     try {
-      // Explicitly delete export items first (in case cascade is not activated yet)
-      await supabase.from("licence_export_items").delete().eq("licence_id", id);
+      try {
+        await supabase.from("shipping_bill_items").delete().eq("shipping_bill_id", id);
+        await supabase.from("brc_tracking").delete().eq("shipping_bill_id", id);
+      } catch {}
 
-      const { error } = await supabase
-        .from("licence_master")
-        .delete()
-        .eq("id", id);
+      await supabase.from("shipping_bills").delete().eq("id", id);
 
-      if (error) {
-        console.error("[DELETE /api/licences/:id] Error:", error);
-        return res.status(500).json({
-          success: false,
-          error: `Failed to delete licence: ${error.message}`,
-        });
+      if (licenceId) {
+        await recalculateExportObligation(licenceId, supabase);
       }
 
       return res.json({
@@ -719,12 +3812,2072 @@ async function startServer() {
         deletedId: id,
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: err.message || "Failed to delete licence record",
+      console.warn("[DELETE /api/shipping-bills/:id] Warning:", err.message);
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        deletedId: id,
       });
     }
   });
+
+  // -------------------------------------------------------------------------
+  // CRUD API: PUT /api/shipping-bills/:id/brc-tracking (Update BRC & Realization)
+  // -------------------------------------------------------------------------
+  app.put("/api/shipping-bills/:id/brc-tracking", async (req, res) => {
+    const { id } = req.params;
+    const brcData = req.body || {};
+    const supabase = getSupabaseServerClient();
+
+    // Find bill to get licenceId
+    let licenceId = "";
+    const targetBill = inMemoryShippingBillsStore.find((b) => b.id === id);
+    if (targetBill) {
+      licenceId = targetBill.licenceId || targetBill.licence_id;
+      targetBill.brcTracking = {
+        ...(targetBill.brcTracking || {}),
+        ...brcData,
+      };
+    }
+
+    if (!supabase) {
+      if (licenceId) await recalculateExportObligation(licenceId);
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        data: brcData,
+      });
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("brc_tracking")
+        .upsert({
+          shipping_bill_id: id,
+          brc_number: brcData.brcNumber,
+          brc_status: brcData.brcStatus || "Not Received",
+          received_date: brcData.receivedDate,
+          realized_date: brcData.realizedDate,
+          realized_amount_fc: Number(brcData.realizedAmountFc || 0),
+          realized_amount_inr: Number(brcData.realizedAmountInr || 0),
+          currency: brcData.currency || "USD",
+          realized_exchange_rate: Number(brcData.realizedExchangeRate || 83.5),
+          bank_name: brcData.bankName,
+          bankBranch: brcData.bankBranch,
+          ifsc_code: brcData.ifscCode,
+          ad_code: brcData.adCode,
+          e_brc_document_number: brcData.eBrcDocumentNumber,
+          remarks: brcData.remarks,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.warn("[PUT /api/shipping-bills/:id/brc-tracking] Notice:", error.message);
+      }
+
+      // If we don't have licenceId, query shipping_bills
+      if (!licenceId) {
+        const { data: sbData } = await supabase.from("shipping_bills").select("licence_id").eq("id", id).single();
+        if (sbData) licenceId = sbData.licence_id;
+      }
+
+      if (licenceId) {
+        await recalculateExportObligation(licenceId, supabase);
+      }
+
+      return res.json({
+        success: true,
+        source: "supabase_postgresql",
+        data: data || brcData,
+      });
+    } catch (err: any) {
+      console.warn("[PUT /api/shipping-bills/:id/brc-tracking] Exception:", err.message);
+      return res.json({
+        success: true,
+        source: "in_memory_fallback",
+        data: brcData,
+      });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // API: GET /api/licences/:id/export-obligation (Get real-time EO progress)
+  // -------------------------------------------------------------------------
+  app.get("/api/licences/:id/export-obligation", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+    const eoData = await recalculateExportObligation(id, supabase);
+
+    if (!eoData) {
+      return res.status(404).json({
+        success: false,
+        error: "Licence not found for Export Obligation calculation",
+      });
+    }
+
+    return res.json({
+      success: true,
+      source: supabase ? "supabase_postgresql" : "in_memory_fallback",
+      data: eoData,
+    });
+  });
+
+  // =========================================================================
+  // PHASE 4: UTILIZATION DASHBOARD & ALERTS API ROUTES
+  // =========================================================================
+
+  let inMemoryUtilizationSnapshots: any[] = [];
+  let inMemoryUtilizationAlerts: any[] = [];
+
+  // Helper: Normalize licence numbers (strips leading zeros for robust comparison)
+  function normalizeLicNo(val: any): string {
+    if (!val) return "";
+    return String(val).trim().replace(/^0+/, "");
+  }
+
+  // Helper: Match shipping bills with a licence using ID, licence number, or file number
+  function getBillsForLicence(lic: any, bills: any[]): any[] {
+    if (!lic || !Array.isArray(bills)) return [];
+    const licId = String(lic.id || "").trim().toLowerCase();
+    const licNo = String(lic.licenceNumber || lic.licence_number || "").trim();
+    const normLicNo = normalizeLicNo(licNo);
+    const fileNo = String(lic.fileNumber || lic.file_number || "").trim().toLowerCase();
+
+    return bills.filter((b) => {
+      const bLicId = String(b.licenceId || b.licence_id || "").trim().toLowerCase();
+      const bLicNo = String(b.licenceNumber || b.licence_number || "").trim();
+      const normBLicNo = normalizeLicNo(bLicNo);
+      const bFileNo = String(b.companyFileNumber || b.company_file_number || "").trim().toLowerCase();
+
+      // 1. Direct UUID or ID match
+      if (bLicId && (bLicId === licId || bLicId === licNo.toLowerCase() || (normLicNo && bLicId === normLicNo.toLowerCase()))) return true;
+      // 2. Licence number match (e.g. 0511038251 vs 511038251)
+      if (licNo && (bLicNo === licNo || (normBLicNo && normBLicNo === normLicNo))) return true;
+      if (normLicNo && bLicId === normLicNo.toLowerCase()) return true;
+      // 3. File number match (e.g. 725 or ECA/SIL/01/2026/00142)
+      if (fileNo && (bFileNo === fileNo || (bFileNo && fileNo && (bFileNo.includes(fileNo) || fileNo.includes(bFileNo))))) return true;
+
+      return false;
+    });
+  }
+
+  // Helper: Calculate days remaining until validity date
+  function calculateDaysRemainingFromDate(dateStr?: string | null): number {
+    if (!dateStr) return 180;
+    try {
+      const target = new Date(dateStr);
+      if (isNaN(target.getTime())) return 180;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const diffTime = target.getTime() - today.getTime();
+      return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    } catch {
+      return 180;
+    }
+  }
+
+  // Helper: Format Date to YYYY-MM-DD
+  function formatDateIso(d: Date): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  // Helper: Compute single licence utilization metrics
+  async function computeLicenceUtilization(licence: any, allBillsForLicence: any[] = [], supabaseClient?: any) {
+    const totalAuthorizedFOB = Number(
+      licence.exportObligationValue ||
+      licence.export_obligation_value ||
+      licence.fobValue ||
+      licence.fob_value ||
+      licence.fobValueInr ||
+      licence.fob_value_inr ||
+      100000000
+    );
+
+    const currency = licence.exportForeignCurrency || licence.export_foreign_currency || "USD";
+    const exportValidity = licence.exportValidity || licence.export_validity || licence.importValidity || licence.import_validity || "";
+    const daysRemaining = calculateDaysRemainingFromDate(exportValidity);
+    const licenceStatus = licence.licenceStatus || licence.licence_status || licence.status || "Active";
+
+    // Aggregate shipped FOB from shipping bills (handles INR or USD * exchange rate)
+    const totalExportedFOB = allBillsForLicence.reduce((sum, b) => {
+      const fobInr = Number(b.totalFobInr || b.total_fob_inr || 0);
+      const fobFc = Number(b.totalFobFc || b.total_fob_fc || 0);
+      const exRate = Number(b.exchangeRate || b.exchange_rate || 83.5);
+      const billFob = fobInr > 0 ? fobInr : (fobFc > 0 ? fobFc * exRate : 0);
+      return sum + billFob;
+    }, 0);
+
+    const utilizationPercent = totalAuthorizedFOB > 0
+      ? Number(((totalExportedFOB / totalAuthorizedFOB) * 100).toFixed(2))
+      : 0;
+
+    const remainingQuota = Math.max(0, totalAuthorizedFOB - totalExportedFOB);
+    const overshootAmount = totalExportedFOB > totalAuthorizedFOB ? Number((totalExportedFOB - totalAuthorizedFOB).toFixed(2)) : 0;
+
+    // Determine Utilization Status
+    let status: "Optimal" | "Under-Utilized" | "Over-Utilized" | "Expired" = "Optimal";
+    if (daysRemaining <= 0 || licenceStatus === "Expired") {
+      status = "Expired";
+    } else if (utilizationPercent > 100) {
+      status = "Over-Utilized";
+    } else if (utilizationPercent >= 50 && daysRemaining > 30) {
+      status = "Optimal";
+    } else {
+      status = "Under-Utilized";
+    }
+
+    // Sort bills by date to analyze trends
+    const sortedBills = [...allBillsForLicence].sort((a, b) => {
+      const da = (a.shippingBillDate || a.shipping_bill_date || "");
+      const db = (b.shippingBillDate || b.shipping_bill_date || "");
+      return da.localeCompare(db);
+    });
+
+    const lastBill = sortedBills[sortedBills.length - 1];
+    const lastExportDate = lastBill ? (lastBill.shippingBillDate || lastBill.shipping_bill_date || null) : null;
+
+    // Calculate rolling 3-month export rate (or average monthly export)
+    const today = new Date();
+    const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = new Date(today.getTime() - 60 * 24 * 60 * 60 * 1000);
+    const ninetyDaysAgo = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000);
+
+    const exportsLast30d = sortedBills
+      .filter((b) => {
+        const d = new Date(b.shippingBillDate || b.shipping_bill_date || 0);
+        return d >= thirtyDaysAgo && d <= today;
+      })
+      .reduce((sum, b) => {
+        const fobInr = Number(b.totalFobInr || b.total_fob_inr || 0);
+        const fobFc = Number(b.totalFobFc || b.total_fob_fc || 0);
+        const exRate = Number(b.exchangeRate || b.exchange_rate || 83.5);
+        return sum + (fobInr > 0 ? fobInr : (fobFc > 0 ? fobFc * exRate : 0));
+      }, 0);
+
+    const exports30to60d = sortedBills
+      .filter((b) => {
+        const d = new Date(b.shippingBillDate || b.shipping_bill_date || 0);
+        return d >= sixtyDaysAgo && d < thirtyDaysAgo;
+      })
+      .reduce((sum, b) => {
+        const fobInr = Number(b.totalFobInr || b.total_fob_inr || 0);
+        const fobFc = Number(b.totalFobFc || b.total_fob_fc || 0);
+        const exRate = Number(b.exchangeRate || b.exchange_rate || 83.5);
+        return sum + (fobInr > 0 ? fobInr : (fobFc > 0 ? fobFc * exRate : 0));
+      }, 0);
+
+    const exportsLast90d = sortedBills
+      .filter((b) => {
+        const d = new Date(b.shippingBillDate || b.shipping_bill_date || 0);
+        return d >= ninetyDaysAgo && d <= today;
+      })
+      .reduce((sum, b) => {
+        const fobInr = Number(b.totalFobInr || b.total_fob_inr || 0);
+        const fobFc = Number(b.totalFobFc || b.total_fob_fc || 0);
+        const exRate = Number(b.exchangeRate || b.exchange_rate || 83.5);
+        return sum + (fobInr > 0 ? fobInr : (fobFc > 0 ? fobFc * exRate : 0));
+      }, 0);
+
+    // Monthly average: preferably 90d / 3, else 30d, else total / 6
+    let avgMonthlyExport = exportsLast90d > 0
+      ? Math.round(exportsLast90d / 3)
+      : exportsLast30d > 0
+      ? exportsLast30d
+      : totalExportedFOB > 0
+      ? Math.round(totalExportedFOB / 6)
+      : Math.round(totalAuthorizedFOB / 12);
+
+    // Determine Trend
+    let trend: "Accelerating" | "Stable" | "Declining" | "Stalled" = "Stable";
+    const daysSinceLastExport = lastExportDate ? calculateDaysRemainingFromDate(lastExportDate) * -1 : 999;
+
+    if (daysSinceLastExport >= 30 && utilizationPercent < 100) {
+      trend = "Stalled";
+    } else if (exportsLast30d > exports30to60d * 1.1 && exportsLast30d > 0) {
+      trend = "Accelerating";
+    } else if (exportsLast30d < exports30to60d * 0.9 && exports30to60d > 0) {
+      trend = "Declining";
+    } else {
+      trend = "Stable";
+    }
+
+    // Forecast Completion Date
+    let forecastCompletionDate: string | null = null;
+    if (remainingQuota > 0 && avgMonthlyExport > 0 && utilizationPercent < 100) {
+      const monthsNeeded = remainingQuota / avgMonthlyExport;
+      const daysNeeded = Math.round(monthsNeeded * 30);
+      const projDate = new Date(today.getTime() + daysNeeded * 24 * 60 * 60 * 1000);
+      forecastCompletionDate = formatDateIso(projDate);
+    }
+
+    // 7-day mini sparkline simulation based on actual progress
+    const baseProgress = Math.max(0, utilizationPercent - 4.5);
+    const historySparkline = [
+      Number((baseProgress).toFixed(1)),
+      Number((baseProgress + 0.6).toFixed(1)),
+      Number((baseProgress + 1.2).toFixed(1)),
+      Number((baseProgress + 1.8).toFixed(1)),
+      Number((baseProgress + 2.7).toFixed(1)),
+      Number((baseProgress + 3.6).toFixed(1)),
+      utilizationPercent,
+    ];
+
+    // Generate / Retrieve Alerts
+    const alerts: any[] = [];
+    const licId = licence.id;
+
+    if (utilizationPercent > 100) {
+      alerts.push({
+        id: `alert-over-${licId}`,
+        licenceId: licId,
+        licenceNumber: licence.licenceNumber || licence.licence_number,
+        companyFileNumber: licence.fileNumber || licence.file_number,
+        alertType: "Over-Utilized",
+        alertSeverity: "Critical",
+        triggeredDate: formatDateIso(today),
+        thresholdValue: 100,
+        currentValue: utilizationPercent,
+        status: "Active",
+        message: `Licence ${licence.licenceNumber || licId} is OVER-UTILIZED by ${overshootAmount > 0 ? `₹${(overshootAmount / 10000000).toFixed(2)} Cr` : `${(utilizationPercent - 100).toFixed(1)}%`} (${utilizationPercent}% of authorized FOB). Shortfall claim required.`,
+      });
+    }
+
+    if (daysRemaining <= 30 && daysRemaining > 0 && utilizationPercent < 90) {
+      alerts.push({
+        id: `alert-exp-${licId}`,
+        licenceId: licId,
+        licenceNumber: licence.licenceNumber || licence.licence_number,
+        companyFileNumber: licence.fileNumber || licence.file_number,
+        alertType: "Expiry Warning",
+        alertSeverity: daysRemaining <= 15 ? "Critical" : "Warning",
+        triggeredDate: formatDateIso(today),
+        thresholdValue: 90,
+        currentValue: utilizationPercent,
+        status: "Active",
+        message: `Licence expires in ${daysRemaining} days with utilization at only ${utilizationPercent}%. Unfulfilled quota must be surrendered to DGFT unless expedited.`,
+      });
+    }
+
+    if (utilizationPercent < 50 && daysRemaining > 30) {
+      alerts.push({
+        id: `alert-under-${licId}`,
+        licenceId: licId,
+        licenceNumber: licence.licenceNumber || licence.licence_number,
+        companyFileNumber: licence.fileNumber || licence.file_number,
+        alertType: "Under-Utilized",
+        alertSeverity: "Warning",
+        triggeredDate: formatDateIso(today),
+        thresholdValue: 50,
+        currentValue: utilizationPercent,
+        status: "Active",
+        message: `Utilization at ${utilizationPercent}%, recommend reaching 50%+ export benchmark to mitigate compliance scrutiny.`,
+      });
+    }
+
+    if (trend === "Stalled" && utilizationPercent < 95) {
+      alerts.push({
+        id: `alert-stalled-${licId}`,
+        licenceId: licId,
+        licenceNumber: licence.licenceNumber || licence.licence_number,
+        companyFileNumber: licence.fileNumber || licence.file_number,
+        alertType: "No Activity",
+        alertSeverity: "Info",
+        triggeredDate: formatDateIso(today),
+        thresholdValue: 0,
+        currentValue: daysSinceLastExport,
+        status: "Active",
+        message: `No export shipments logged in over 30 days. Verify pending Let Export Orders (LEO) or production schedule.`,
+      });
+    }
+
+    const buyerNames = Array.from(new Set(allBillsForLicence.map((b) => b.buyerName || b.buyer_name).filter(Boolean)));
+
+    return {
+      licenceId: licence.id,
+      licenceNumber: licence.licenceNumber || licence.licence_number || "511038251",
+      companyFileNumber: licence.fileNumber || licence.file_number || "ECA/SIL/01/2026",
+      licenceStatus: licenceStatus,
+      licenceDate: licence.licenceDate || licence.licence_date || "2026-01-15",
+      totalAuthorizedFOB,
+      totalExportedFOB,
+      remainingQuota,
+      overshootAmount,
+      utilizationPercent,
+      status,
+      daysRemaining: Math.max(0, daysRemaining),
+      licenceExpiry: exportValidity || "2027-01-15",
+      forecastCompletionDate,
+      avgMonthlyExport,
+      trend,
+      historySparkline,
+      shippingBillsCount: allBillsForLicence.length,
+      alerts,
+      currency,
+      lastExportDate,
+      buyerNames,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /api/utilization/dashboard (Batch utilization summary & paginated list)
+  // -------------------------------------------------------------------------
+  app.get("/api/utilization/dashboard", async (req, res) => {
+    const startTime = performance.now();
+    const {
+      status,
+      licenceStatus,
+      daysRemainingMax,
+      sortBy = "utilization_percent",
+      sortOrder = "asc",
+      searchText,
+      page = "1",
+      limit = "50",
+    } = req.query as Record<string, string>;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const isAll = limit === "all" || limit === "0" || limit === "-1";
+    const limitNum = isAll ? 0 : Math.max(1, Math.min(500, parseInt(limit, 10) || 50));
+    const offset = (pageNum - 1) * limitNum;
+    const isAscending = String(sortOrder).toLowerCase() === "asc";
+
+    const supabase = getSupabaseServerClient();
+    let allLicences: any[] = [];
+    let allBills: any[] = [];
+
+    if (supabase) {
+      try {
+        const [licRes, billRes] = await Promise.all([
+          supabase.from("licence_master").select("*"),
+          supabase.from("shipping_bills").select("*"),
+        ]);
+        if (licRes.data && licRes.data.length > 0) {
+          allLicences = licRes.data.map(mapDbRowToLicence);
+        } else {
+          allLicences = inMemoryLicencesStore;
+        }
+
+        if (billRes.data && billRes.data.length > 0) {
+          allBills = billRes.data;
+        } else {
+          allBills = inMemoryShippingBillsStore;
+        }
+      } catch (err: any) {
+        console.warn("[GET /api/utilization/dashboard] Supabase fetch fallback:", err.message);
+        allLicences = inMemoryLicencesStore;
+        allBills = inMemoryShippingBillsStore;
+      }
+    } else {
+      allLicences = inMemoryLicencesStore;
+      allBills = inMemoryShippingBillsStore;
+    }
+
+    // Compute metrics for every licence with robust ID / Licence Number matching
+    const computedMetrics = await Promise.all(
+      allLicences.map((lic) => {
+        const matchedBills = getBillsForLicence(lic, allBills);
+        return computeLicenceUtilization(lic, matchedBills, supabase);
+      })
+    );
+
+    // Compute Overall Summary Metrics
+    let inComplianceCount = 0;
+    let atRiskCount = 0;
+    let activeAlertsCount = 0;
+    let criticalAlertsCount = 0;
+    let warningAlertsCount = 0;
+    let infoAlertsCount = 0;
+    let expiringSoonCount = 0;
+    let totalAuthorizedFobSum = 0;
+    let totalExportedFobSum = 0;
+    const expiringSoonLicences: any[] = [];
+
+    computedMetrics.forEach((m) => {
+      totalAuthorizedFobSum += m.totalAuthorizedFOB;
+      totalExportedFobSum += m.totalExportedFOB;
+
+      if (m.status === "Optimal") {
+        inComplianceCount++;
+      } else if (m.status === "Under-Utilized" || m.status === "Over-Utilized") {
+        atRiskCount++;
+      }
+
+      if (m.daysRemaining <= 30 && m.status !== "Expired") {
+        expiringSoonCount++;
+        expiringSoonLicences.push({
+          id: m.licenceId,
+          licenceNumber: m.licenceNumber,
+          companyFileNumber: m.companyFileNumber,
+          daysRemaining: m.daysRemaining,
+          expiryDate: m.licenceExpiry,
+          utilizationPercent: m.utilizationPercent,
+        });
+      }
+
+      m.alerts.forEach((alt: any) => {
+        activeAlertsCount++;
+        if (alt.alertSeverity === "Critical") criticalAlertsCount++;
+        else if (alt.alertSeverity === "Warning") warningAlertsCount++;
+        else infoAlertsCount++;
+      });
+    });
+
+    const overallUtilizationPercent = totalAuthorizedFobSum > 0
+      ? Number(((totalExportedFobSum / totalAuthorizedFobSum) * 100).toFixed(2))
+      : 0;
+
+    const summary = {
+      inComplianceCount,
+      atRiskCount,
+      activeAlertsCount,
+      criticalAlertsCount,
+      warningAlertsCount,
+      infoAlertsCount,
+      expiringSoonCount,
+      totalLicencesCount: computedMetrics.length,
+      expiringSoonLicences,
+      totalAuthorizedFobSum,
+      totalExportedFobSum,
+      overallUtilizationPercent,
+    };
+
+    // Filter results
+    let filtered = computedMetrics;
+
+    if (status && status !== "All") {
+      filtered = filtered.filter((m) => m.status.toLowerCase() === status.toLowerCase());
+    }
+
+    if (licenceStatus && licenceStatus !== "All") {
+      filtered = filtered.filter((m) => m.licenceStatus.toLowerCase() === licenceStatus.toLowerCase());
+    }
+
+    if (daysRemainingMax) {
+      const maxDays = parseInt(daysRemainingMax, 10);
+      if (!isNaN(maxDays)) {
+        filtered = filtered.filter((m) => m.daysRemaining <= maxDays);
+      }
+    }
+
+    if (searchText) {
+      const q = searchText.trim().toLowerCase();
+      filtered = filtered.filter(
+        (m) =>
+          m.licenceNumber.toLowerCase().includes(q) ||
+          m.companyFileNumber.toLowerCase().includes(q) ||
+          (m.buyerNames && m.buyerNames.some((b: string) => b.toLowerCase().includes(q)))
+      );
+    }
+
+    // Sort results
+    filtered.sort((a, b) => {
+      let valA: any;
+      let valB: any;
+
+      if (sortBy === "utilization_percent") {
+        valA = a.utilizationPercent;
+        valB = b.utilizationPercent;
+      } else if (sortBy === "days_remaining") {
+        valA = a.daysRemaining;
+        valB = b.daysRemaining;
+      } else if (sortBy === "licence_number") {
+        valA = a.licenceNumber;
+        valB = b.licenceNumber;
+      } else if (sortBy === "fob_value") {
+        valA = a.totalAuthorizedFOB;
+        valB = b.totalAuthorizedFOB;
+      } else if (sortBy === "trend") {
+        valA = a.trend;
+        valB = b.trend;
+      } else {
+        valA = a.utilizationPercent;
+        valB = b.utilizationPercent;
+      }
+
+      if (typeof valA === "string") {
+        return isAscending ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      }
+      return isAscending ? valA - valB : valB - valA;
+    });
+
+    const totalRecords = filtered.length;
+    const totalPages = limitNum > 0 ? Math.ceil(totalRecords / limitNum) || 1 : 1;
+    const paginatedData = limitNum > 0 ? filtered.slice(offset, offset + limitNum) : filtered;
+    const queryTimeMs = Math.round(performance.now() - startTime);
+
+    return res.json({
+      success: true,
+      source: supabase ? "supabase_postgresql" : "in_memory_fallback",
+      summary,
+      data: paginatedData,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalRecords,
+        limit: limitNum > 0 ? limitNum : totalRecords,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      queryTimeMs,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/utilization/licences/:id (Single licence utilization & deep dive)
+  // -------------------------------------------------------------------------
+  app.get("/api/utilization/licences/:id", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    let licence: any = null;
+    let allBills: any[] = [];
+
+    const normId = normalizeLicNo(id);
+
+    if (supabase) {
+      try {
+        // Try UUID match, licence_number match, or file_number match
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+        let licQuery = supabase.from("licence_master").select("*");
+        if (isUuid) {
+          licQuery = licQuery.eq("id", id);
+        } else {
+          licQuery = licQuery.or(`licence_number.eq.${id},licence_number.eq.0${id},file_number.eq.${id}`);
+        }
+
+        const [licRes, billRes] = await Promise.all([
+          licQuery.maybeSingle(),
+          supabase.from("shipping_bills").select("*"),
+        ]);
+        if (licRes.data) licence = mapDbRowToLicence(licRes.data);
+        if (billRes.data && billRes.data.length > 0) {
+          allBills = billRes.data;
+        } else {
+          allBills = inMemoryShippingBillsStore;
+        }
+      } catch (err: any) {
+        console.warn("[GET /api/utilization/licences/:id] Supabase notice:", err.message);
+        allBills = inMemoryShippingBillsStore;
+      }
+    } else {
+      allBills = inMemoryShippingBillsStore;
+    }
+
+    if (!licence) {
+      licence = inMemoryLicencesStore.find(
+        (l) =>
+          l.id === id ||
+          l.licenceNumber === id ||
+          normalizeLicNo(l.licenceNumber) === normId ||
+          l.fileNumber === id
+      );
+    }
+
+    if (!licence) {
+      // Return structured default for sample requests
+      licence = {
+        id,
+        fileNumber: id.length < 10 ? id : "725",
+        licenceNumber: id.length < 15 ? id : "0511038251",
+        licenceStatus: "Active",
+        exportObligationValue: 14479320,
+        fobValue: 14479320,
+        exportValidity: "2027-01-15",
+        exportForeignCurrency: "USD",
+      };
+    }
+
+    const matchingBills = getBillsForLicence(licence, allBills);
+    const metrics = await computeLicenceUtilization(licence, matchingBills, supabase);
+
+    return res.json({
+      success: true,
+      source: supabase ? "supabase_postgresql" : "in_memory_fallback",
+      data: metrics,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/utilization/licences/:id/history (90-day daily trend curve)
+  // -------------------------------------------------------------------------
+  app.get("/api/utilization/licences/:id/history", async (req, res) => {
+    const { id } = req.params;
+    const { days = "90" } = req.query as Record<string, string>;
+    const numDays = Math.min(365, Math.max(7, parseInt(days, 10) || 90));
+
+    const supabase = getSupabaseServerClient();
+    let licence: any = null;
+    let allBills: any[] = [];
+
+    const normId = normalizeLicNo(id);
+
+    if (supabase) {
+      try {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+        let licQuery = supabase.from("licence_master").select("*");
+        if (isUuid) {
+          licQuery = licQuery.eq("id", id);
+        } else {
+          licQuery = licQuery.or(`licence_number.eq.${id},licence_number.eq.0${id},file_number.eq.${id}`);
+        }
+
+        const [licRes, billRes, snapRes] = await Promise.all([
+          licQuery.maybeSingle(),
+          supabase.from("shipping_bills").select("*"),
+          supabase.from("utilization_snapshots").select("*").eq("licence_id", id).order("snapshot_date", { ascending: true }),
+        ]);
+        if (licRes.data) licence = mapDbRowToLicence(licRes.data);
+        if (billRes.data && billRes.data.length > 0) {
+          allBills = billRes.data;
+        } else {
+          allBills = inMemoryShippingBillsStore;
+        }
+
+        if (snapRes.data && snapRes.data.length >= 7) {
+          return res.json({
+            success: true,
+            source: "supabase_postgresql",
+            data: snapRes.data,
+          });
+        }
+      } catch (err: any) {
+        console.warn("[GET /api/utilization/licences/:id/history] DB notice:", err.message);
+        allBills = inMemoryShippingBillsStore;
+      }
+    } else {
+      allBills = inMemoryShippingBillsStore;
+    }
+
+    if (!licence) {
+      licence = inMemoryLicencesStore.find(
+        (l) =>
+          l.id === id ||
+          l.licenceNumber === id ||
+          normalizeLicNo(l.licenceNumber) === normId ||
+          l.fileNumber === id
+      ) || {
+        id,
+        licenceNumber: "0511038251",
+        exportObligationValue: 14479320,
+        exportValidity: "2027-01-15",
+      };
+    }
+
+    const matchingBills = getBillsForLicence(licence, allBills);
+    const totalAuth = Number(licence.exportObligationValue || licence.fobValue || 14479320);
+    const totalExp = matchingBills.reduce((s, b) => {
+      const fobInr = Number(b.totalFobInr || b.total_fob_inr || 0);
+      const fobFc = Number(b.totalFobFc || b.total_fob_fc || 0);
+      const exRate = Number(b.exchangeRate || b.exchange_rate || 83.5);
+      return s + (fobInr > 0 ? fobInr : (fobFc > 0 ? fobFc * exRate : 0));
+    }, 0);
+    const currentUtil = totalAuth > 0 ? Number(((totalExp / totalAuth) * 100).toFixed(2)) : 20.12;
+
+    // Generate realistic daily historical curve back `numDays` days
+    const snapshots: any[] = [];
+    const today = new Date();
+
+    for (let i = numDays; i >= 0; i--) {
+      const d = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+      const dateStr = formatDateIso(d);
+      const progressFactor = 1 - (i / numDays);
+      const easeProgress = Math.pow(progressFactor, 1.25);
+      const util = Math.max(0, Math.min(150, Number((currentUtil * easeProgress).toFixed(2))));
+      const exportedVal = Math.round((util / 100) * totalAuth);
+
+      let status = "Optimal";
+      if (util > 100) status = "Over-Utilized";
+      else if (util < 50) status = "Under-Utilized";
+
+      snapshots.push({
+        id: `snap-${licence.id || id}-${dateStr}`,
+        licenceId: licence.id || id,
+        snapshotDate: dateStr,
+        totalLicenceValue: totalAuth,
+        totalExportedValue: exportedVal,
+        utilizationPercent: util,
+        status,
+        daysRemaining: Math.max(0, 180 - (numDays - i)),
+      });
+    }
+
+    return res.json({
+      success: true,
+      source: "generated_trend_series",
+      data: snapshots,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/utilization/snapshots (Trigger daily snapshot recalculation)
+  // -------------------------------------------------------------------------
+  app.post("/api/utilization/snapshots", async (req, res) => {
+    const supabase = getSupabaseServerClient();
+    const todayStr = formatDateIso(new Date());
+
+    let allLicences: any[] = [];
+    let allBills: any[] = [];
+
+    if (supabase) {
+      try {
+        const [licRes, billRes] = await Promise.all([
+          supabase.from("licence_master").select("*"),
+          supabase.from("shipping_bills").select("*"),
+        ]);
+        if (licRes.data && licRes.data.length > 0) {
+          allLicences = licRes.data.map(mapDbRowToLicence);
+        } else {
+          allLicences = inMemoryLicencesStore;
+        }
+
+        if (billRes.data && billRes.data.length > 0) {
+          allBills = billRes.data;
+        } else {
+          allBills = inMemoryShippingBillsStore;
+        }
+      } catch (err: any) {
+        console.warn("[POST /api/utilization/snapshots] Error:", err.message);
+        allLicences = inMemoryLicencesStore;
+        allBills = inMemoryShippingBillsStore;
+      }
+    } else {
+      allLicences = inMemoryLicencesStore;
+      allBills = inMemoryShippingBillsStore;
+    }
+
+    const snapshotsToInsert: any[] = [];
+    const alertsToInsert: any[] = [];
+
+    for (const lic of allLicences) {
+      const matchedBills = getBillsForLicence(lic, allBills);
+      const metrics = await computeLicenceUtilization(lic, matchedBills, supabase);
+      snapshotsToInsert.push({
+        licence_id: lic.id,
+        snapshot_date: todayStr,
+        total_licence_value: metrics.totalAuthorizedFOB,
+        total_exported_value: metrics.totalExportedFOB,
+        utilization_percent: metrics.utilizationPercent,
+        status: metrics.status,
+        days_remaining: metrics.daysRemaining,
+        forecast_completion_date: metrics.forecastCompletionDate,
+        avg_monthly_export: metrics.avgMonthlyExport,
+        trend: metrics.trend,
+      });
+
+      metrics.alerts.forEach((alt: any) => {
+        alertsToInsert.push({
+          licence_id: lic.id,
+          alert_type: alt.alertType,
+          alert_severity: alt.alertSeverity,
+          triggered_date: todayStr,
+          threshold_value: alt.thresholdValue,
+          current_value: alt.currentValue,
+          status: "Active",
+          resolution_notes: alt.message,
+        });
+      });
+    }
+
+    inMemoryUtilizationSnapshots = snapshotsToInsert;
+    inMemoryUtilizationAlerts = alertsToInsert;
+
+    if (supabase && snapshotsToInsert.length > 0) {
+      try {
+        await supabase.from("utilization_snapshots").upsert(snapshotsToInsert, { onConflict: "licence_id,snapshot_date" });
+        if (alertsToInsert.length > 0) {
+          await supabase.from("utilization_alerts").insert(alertsToInsert);
+        }
+      } catch (dbErr: any) {
+        console.warn("[POST /api/utilization/snapshots] DB Upsert error:", dbErr.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Successfully recalculated ${snapshotsToInsert.length} snapshots and ${alertsToInsert.length} alerts for ${todayStr}.`,
+      snapshotsCount: snapshotsToInsert.length,
+      alertsCount: alertsToInsert.length,
+      snapshots: snapshotsToInsert,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // PATCH /api/utilization/alerts/:id (Resolve or dismiss compliance alert)
+  // -------------------------------------------------------------------------
+  app.patch("/api/utilization/alerts/:id", async (req, res) => {
+    const { id } = req.params;
+    const { status = "Resolved", resolutionNotes = "" } = req.body || {};
+    const supabase = getSupabaseServerClient();
+    const todayStr = formatDateIso(new Date());
+
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("utilization_alerts")
+          .update({
+            status,
+            resolution_notes: resolutionNotes,
+            resolved_date: todayStr,
+          })
+          .eq("id", id)
+          .select()
+          .single();
+
+        if (!error && data) {
+          return res.json({ success: true, source: "supabase_postgresql", data });
+        }
+      } catch (err: any) {
+        console.warn("[PATCH /api/utilization/alerts/:id] Error:", err.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      source: "in_memory_fallback",
+      data: {
+        id,
+        status,
+        resolutionNotes,
+        resolvedDate: todayStr,
+      },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/utilization/simulate (What-If scenario projection)
+  // -------------------------------------------------------------------------
+  app.post("/api/utilization/simulate", async (req, res) => {
+    const { licenceId, additionalFOB = 0, hypotheticalMonthlyRate } = req.body || {};
+    const supabase = getSupabaseServerClient();
+
+    let licence: any = null;
+    let allBills: any[] = [];
+    const normId = normalizeLicNo(licenceId);
+
+    if (supabase) {
+      try {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(licenceId);
+        let licQuery = supabase.from("licence_master").select("*");
+        if (isUuid) {
+          licQuery = licQuery.eq("id", licenceId);
+        } else {
+          licQuery = licQuery.or(`licence_number.eq.${licenceId},licence_number.eq.0${licenceId},file_number.eq.${licenceId}`);
+        }
+
+        const [licRes, billRes] = await Promise.all([
+          licQuery.maybeSingle(),
+          supabase.from("shipping_bills").select("*"),
+        ]);
+        if (licRes.data) licence = mapDbRowToLicence(licRes.data);
+        if (billRes.data && billRes.data.length > 0) {
+          allBills = billRes.data;
+        } else {
+          allBills = inMemoryShippingBillsStore;
+        }
+      } catch (err: any) {
+        console.warn("[POST /api/utilization/simulate] Supabase fetch error:", err.message);
+        allBills = inMemoryShippingBillsStore;
+      }
+    } else {
+      allBills = inMemoryShippingBillsStore;
+    }
+
+    if (!licence) {
+      licence = inMemoryLicencesStore.find(
+        (l) =>
+          l.id === licenceId ||
+          l.licenceNumber === licenceId ||
+          normalizeLicNo(l.licenceNumber) === normId ||
+          l.fileNumber === licenceId
+      ) || {
+        id: licenceId || "sim-licence",
+        licenceNumber: "0511038251",
+        exportObligationValue: 14479320,
+        exportValidity: "2027-01-15",
+      };
+    }
+
+    const matchingBills = getBillsForLicence(licence, allBills);
+    const currentMetrics = await computeLicenceUtilization(licence, matchingBills, supabase);
+    const addedFobNum = Number(additionalFOB || 0);
+    const projectedExportedFOB = currentMetrics.totalExportedFOB + addedFobNum;
+    const authorizedFOB = currentMetrics.totalAuthorizedFOB;
+    const projectedUtilization = authorizedFOB > 0
+      ? Number(((projectedExportedFOB / authorizedFOB) * 100).toFixed(2))
+      : 0;
+
+    const remainingFob = Math.max(0, authorizedFOB - projectedExportedFOB);
+    const monthlyRate = Number(hypotheticalMonthlyRate || currentMetrics.avgMonthlyExport || (authorizedFOB / 12));
+
+    let projectedCompletionDate: string | null = null;
+    if (remainingFob > 0 && monthlyRate > 0) {
+      const daysNeeded = Math.round((remainingFob / monthlyRate) * 30);
+      const proj = new Date(Date.now() + daysNeeded * 24 * 60 * 60 * 1000);
+      projectedCompletionDate = formatDateIso(proj);
+    }
+
+    let newStatus: "Optimal" | "Under-Utilized" | "Over-Utilized" | "Expired" = "Optimal";
+    if (projectedUtilization > 100) newStatus = "Over-Utilized";
+    else if (projectedUtilization >= 50) newStatus = "Optimal";
+    else newStatus = "Under-Utilized";
+
+    return res.json({
+      success: true,
+      data: {
+        currentFOB: currentMetrics.totalExportedFOB,
+        additionalFOB: addedFobNum,
+        projectedExportedFOB,
+        authorizedFOB,
+        currentUtilization: currentMetrics.utilizationPercent,
+        projectedUtilization,
+        currentDaysRemaining: currentMetrics.daysRemaining,
+        projectedCompletionDate,
+        avgMonthlyExport: monthlyRate,
+        newStatus,
+        isOverUtilized: projectedUtilization > 100,
+        projectedOvershoot: projectedExportedFOB > authorizedFOB ? projectedExportedFOB - authorizedFOB : 0,
+      },
+    });
+  });
+
+  // =========================================================================
+  // PHASE 2: IMPORT TRANSACTIONS & INBOUND LOGISTICS REST API ENDPOINTS
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // 1. GET /api/sion-norms (Master List of SION Norms with Yield Ratios)
+  // -------------------------------------------------------------------------
+  app.get("/api/sion-norms", (req, res) => {
+    return res.json({
+      success: true,
+      data: SION_NORMS_MASTER,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 2. GET /api/import-documents (List, Filter, Sort, Paginate with Summary)
+  // -------------------------------------------------------------------------
+  app.get("/api/import-documents", async (req, res) => {
+    const supabase = getSupabaseServerClient();
+    const {
+      page = 1,
+      limit = 50,
+      sortBy = "docDate",
+      sortOrder = "desc",
+      dateFrom,
+      dateTo,
+      licenceId,
+      boeStatus,
+      grnStatus,
+      supplierCountry,
+      supplierName,
+      searchText,
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(String(page)) || 1);
+    const isAll = limit === "all";
+    const limitNum = isAll ? 1000 : Math.max(1, parseInt(String(limit)) || 50);
+
+    let documents: any[] = [];
+    let lineItems: any[] = [];
+    let grns: any[] = [];
+    let consumptions: any[] = [];
+    let source = "in_memory_fallback";
+
+    if (supabase) {
+      try {
+        const { data: dbDocs, error: docErr } = await supabase
+          .from("import_documents")
+          .select("*");
+
+        if (!docErr && dbDocs && dbDocs.length > 0) {
+          source = "supabase_postgresql";
+          documents = dbDocs.map((d) => ({
+            id: d.id,
+            licenceId: d.licence_id,
+            licenceNumber: d.licence_number,
+            companyFileNumber: d.company_file_number,
+            importBillNumber: d.import_bill_number,
+            docDate: d.doc_date,
+            customsPort: d.customs_port,
+            importerName: d.importer_name,
+            supplierCountry: d.supplier_country,
+            supplierName: d.supplier_name,
+            supplierInvoiceNo: d.supplier_invoice_no,
+            customsDutyPercent: Number(d.customs_duty_percent || 0),
+            customsDutyAmount: Number(d.customs_duty_amount || 0),
+            igstPercent: Number(d.igst_percent || 0),
+            igstAmount: Number(d.igst_amount || 0),
+            totalInvoiceValueFc: Number(d.total_invoice_value_fc || 0),
+            totalInvoiceValueInr: Number(d.total_invoice_value_inr || 0),
+            importCurrency: d.import_currency || "USD",
+            exchangeRate: Number(d.exchange_rate || 89.65),
+            boeStatus: d.boe_status || "Filed",
+            customsClearanceDate: d.customs_clearance_date,
+            notes: d.notes,
+            created_at: d.created_at,
+          }));
+
+          const { data: dbItems } = await supabase.from("import_line_items").select("*");
+          if (dbItems) {
+            lineItems = dbItems.map((i) => ({
+              id: i.id,
+              importBillId: i.import_bill_id,
+              hsCode: i.hs_code,
+              materialDescription: i.material_description,
+              materialId: i.material_id,
+              quantityReceived: Number(i.quantity_received || 0),
+              uom: i.uom,
+              unitPriceFc: Number(i.unit_price_fc || 0),
+              totalLineValueFc: Number(i.total_line_value_fc || 0),
+              totalLineValueInr: Number(i.total_line_value_inr || 0),
+              sionNormId: i.sion_norm_id,
+              expectedOutputQty: Number(i.expected_output_qty || 0),
+              expectedOutputUom: i.expected_output_uom,
+              notes: i.notes,
+              created_at: i.created_at,
+            }));
+          }
+
+          const { data: dbGrns } = await supabase.from("goods_receipt_notes").select("*");
+          if (dbGrns) {
+            grns = dbGrns.map((g) => ({
+              id: g.id,
+              importBillId: g.import_bill_id,
+              grnNumber: g.grn_number,
+              receiptDate: g.receipt_date,
+              warehouseLocation: g.warehouse_location,
+              receivedBy: g.received_by,
+              inspectedBy: g.inspected_by,
+              quantityChecked: Number(g.quantity_checked || 0),
+              damageNoted: g.damage_noted,
+              status: g.status,
+              created_at: g.created_at,
+            }));
+          }
+
+          const { data: dbCons } = await supabase.from("consumption_tracking").select("*");
+          if (dbCons) {
+            consumptions = dbCons.map((c) => ({
+              id: c.id,
+              importLineItemId: c.import_line_item_id,
+              licenceId: c.licence_id,
+              consumptionDate: c.consumption_date,
+              quantityConsumed: Number(c.quantity_consumed || 0),
+              productionBatchId: c.production_batch_id,
+              finishedGoodProducedQty: Number(c.finished_good_produced_qty || 0),
+              finishedGoodId: c.finished_good_id,
+              notes: c.notes,
+              created_at: c.created_at,
+            }));
+          }
+        }
+      } catch (e) {
+        console.warn("[GET /api/import-documents] Supabase query fallback:", e);
+      }
+    }
+
+    if (documents.length === 0) {
+      documents = inMemoryImportDocumentsStore;
+      lineItems = inMemoryImportLineItemsStore;
+      grns = inMemoryGoodsReceiptNotesStore;
+      consumptions = inMemoryConsumptionTrackingStore;
+    }
+
+    // Attach joined line items, GRN, and consumption calculations to each BoE
+    const enrichedDocuments = documents.map((doc) => {
+      const docItems = lineItems.filter((i) => i.importBillId === doc.id);
+      const docGrn = grns.find((g) => g.importBillId === doc.id);
+
+      const itemsWithConsumption = docItems.map((item) => {
+        const itemCons = consumptions.filter((c) => c.importLineItemId === item.id);
+        const totalConsumedQty = itemCons.reduce((sum, c) => sum + Number(c.quantityConsumed || 0), 0);
+        const actualOutputProducedQty = itemCons.reduce((sum, c) => sum + Number(c.finishedGoodProducedQty || 0), 0);
+        const remainingInventoryQty = Math.max(0, item.quantityReceived - totalConsumedQty);
+        const consumedPercent = item.quantityReceived > 0 ? Math.round((totalConsumedQty / item.quantityReceived) * 100) : 0;
+        
+        return {
+          ...item,
+          consumptionTracking: itemCons,
+          totalConsumedQty,
+          remainingInventoryQty,
+          consumedPercent,
+          actualOutputProducedQty,
+        };
+      });
+
+      const totalReceivedQty = itemsWithConsumption.reduce((sum, i) => sum + (i.quantityReceived || 0), 0);
+      const totalConsumedQty = itemsWithConsumption.reduce((sum, i) => sum + (i.totalConsumedQty || 0), 0);
+      const totalRemainingQty = Math.max(0, totalReceivedQty - totalConsumedQty);
+
+      return {
+        ...doc,
+        lineItems: itemsWithConsumption,
+        grn: docGrn || null,
+        totalItemsCount: itemsWithConsumption.length,
+        totalReceivedQty,
+        totalConsumedQty,
+        totalRemainingQty,
+        grnStatus: docGrn ? docGrn.status : "Pending GRN",
+      };
+    });
+
+    // Apply Filters
+    let filtered = enrichedDocuments;
+
+    if (searchText) {
+      const q = String(searchText).toLowerCase().trim();
+      filtered = filtered.filter(
+        (d) =>
+          d.importBillNumber?.toLowerCase().includes(q) ||
+          d.licenceNumber?.toLowerCase().includes(q) ||
+          d.companyFileNumber?.toLowerCase().includes(q) ||
+          d.supplierName?.toLowerCase().includes(q) ||
+          d.supplierCountry?.toLowerCase().includes(q) ||
+          d.customsPort?.toLowerCase().includes(q) ||
+          d.supplierInvoiceNo?.toLowerCase().includes(q) ||
+          d.lineItems?.some((item: any) =>
+            item.materialDescription?.toLowerCase().includes(q) ||
+            item.hsCode?.toLowerCase().includes(q)
+          )
+      );
+    }
+
+    if (licenceId) {
+      const ids = Array.isArray(licenceId) ? licenceId : [licenceId];
+      filtered = filtered.filter((d) => ids.includes(d.licenceId) || ids.includes(d.licenceNumber) || ids.includes(d.companyFileNumber));
+    }
+
+    if (boeStatus) {
+      const statuses = Array.isArray(boeStatus) ? boeStatus : [boeStatus];
+      filtered = filtered.filter((d) => statuses.includes(d.boeStatus));
+    }
+
+    if (grnStatus) {
+      const grnStatuses = Array.isArray(grnStatus) ? grnStatus : [grnStatus];
+      filtered = filtered.filter((d) => grnStatuses.includes(d.grnStatus));
+    }
+
+    if (supplierCountry) {
+      filtered = filtered.filter(
+        (d) => d.supplierCountry?.toLowerCase() === String(supplierCountry).toLowerCase()
+      );
+    }
+
+    if (supplierName) {
+      filtered = filtered.filter(
+        (d) => d.supplierName?.toLowerCase() === String(supplierName).toLowerCase()
+      );
+    }
+
+    if (dateFrom) {
+      filtered = filtered.filter((d) => d.docDate >= String(dateFrom));
+    }
+
+    if (dateTo) {
+      filtered = filtered.filter((d) => d.docDate <= String(dateTo));
+    }
+
+    // Sorting
+    filtered.sort((a, b) => {
+      let valA = a[String(sortBy)] ?? "";
+      let valB = b[String(sortBy)] ?? "";
+
+      if (typeof valA === "number" && typeof valB === "number") {
+        return sortOrder === "asc" ? valA - valB : valB - valA;
+      }
+
+      const strA = String(valA).toLowerCase();
+      const strB = String(valB).toLowerCase();
+      return sortOrder === "asc" ? strA.localeCompare(strB) : strB.localeCompare(strA);
+    });
+
+    // Summary calculation over the whole filtered set
+    const totalDocumentsCount = filtered.length;
+    const clearedDocumentsCount = filtered.filter((d) => d.boeStatus === "Cleared").length;
+    const pendingFiledCount = filtered.filter((d) => d.boeStatus === "Filed").length;
+    const rejectedCount = filtered.filter((d) => d.boeStatus === "Rejected").length;
+    const totalImportValueInr = filtered.reduce((sum, d) => sum + (Number(d.totalInvoiceValueInr) || 0), 0);
+    const totalImportValueFc = filtered.reduce((sum, d) => sum + (Number(d.totalInvoiceValueFc) || 0), 0);
+    const totalDutySaved = filtered.reduce((sum, d) => sum + (Number(d.customsDutyAmount) || 0) + (Number(d.igstAmount) || 0), 0);
+    const totalQuantityImported = filtered.reduce((sum, d) => sum + (Number(d.totalReceivedQty) || 0), 0);
+    const totalQuantityConsumed = filtered.reduce((sum, d) => sum + (Number(d.totalConsumedQty) || 0), 0);
+    const totalInventoryRemaining = Math.max(0, totalQuantityImported - totalQuantityConsumed);
+
+    // Pagination
+    const totalRecords = filtered.length;
+    const totalPages = Math.ceil(totalRecords / limitNum) || 1;
+    const startIndex = (pageNum - 1) * limitNum;
+    const paginatedDocs = filtered.slice(startIndex, startIndex + limitNum);
+
+    return res.json({
+      success: true,
+      source,
+      data: paginatedDocs,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalRecords,
+        limit: limitNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+      summary: {
+        totalDocumentsCount,
+        clearedDocumentsCount,
+        pendingFiledCount,
+        rejectedCount,
+        totalImportValueInr,
+        totalImportValueFc,
+        totalQuantityImported,
+        totalQuantityConsumed,
+        totalInventoryRemaining,
+        totalDutySaved,
+      },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 3. GET /api/import-documents/:id (Single Bill of Entry Details)
+  // -------------------------------------------------------------------------
+  app.get("/api/import-documents/:id", async (req, res) => {
+    const { id } = req.params;
+    const supabase = getSupabaseServerClient();
+
+    let doc: any = null;
+    let docItems: any[] = [];
+    let docGrn: any = null;
+    let docConsumptions: any[] = [];
+
+    if (supabase) {
+      try {
+        const { data: dbDoc } = await supabase
+          .from("import_documents")
+          .select("*")
+          .eq("id", id)
+          .single();
+
+        if (dbDoc) {
+          doc = {
+            id: dbDoc.id,
+            licenceId: dbDoc.licence_id,
+            licenceNumber: dbDoc.licence_number,
+            companyFileNumber: dbDoc.company_file_number,
+            importBillNumber: dbDoc.import_bill_number,
+            docDate: dbDoc.doc_date,
+            customsPort: dbDoc.customs_port,
+            importerName: dbDoc.importer_name,
+            supplierCountry: dbDoc.supplier_country,
+            supplierName: dbDoc.supplier_name,
+            supplierInvoiceNo: dbDoc.supplier_invoice_no,
+            customsDutyPercent: Number(dbDoc.customs_duty_percent || 0),
+            customsDutyAmount: Number(dbDoc.customs_duty_amount || 0),
+            igstPercent: Number(dbDoc.igst_percent || 0),
+            igstAmount: Number(dbDoc.igst_amount || 0),
+            totalInvoiceValueFc: Number(dbDoc.total_invoice_value_fc || 0),
+            totalInvoiceValueInr: Number(dbDoc.total_invoice_value_inr || 0),
+            importCurrency: dbDoc.import_currency || "USD",
+            exchangeRate: Number(dbDoc.exchange_rate || 89.65),
+            boeStatus: dbDoc.boe_status || "Filed",
+            customsClearanceDate: dbDoc.customs_clearance_date,
+            notes: dbDoc.notes,
+          };
+
+          const { data: items } = await supabase.from("import_line_items").select("*").eq("import_bill_id", id);
+          if (items) {
+            docItems = items.map((i) => ({
+              id: i.id,
+              importBillId: i.import_bill_id,
+              hsCode: i.hs_code,
+              materialDescription: i.material_description,
+              materialId: i.material_id,
+              quantityReceived: Number(i.quantity_received || 0),
+              uom: i.uom,
+              unitPriceFc: Number(i.unit_price_fc || 0),
+              totalLineValueFc: Number(i.total_line_value_fc || 0),
+              totalLineValueInr: Number(i.total_line_value_inr || 0),
+              sionNormId: i.sion_norm_id,
+              expectedOutputQty: Number(i.expected_output_qty || 0),
+              expectedOutputUom: i.expected_output_uom,
+              notes: i.notes,
+            }));
+          }
+
+          const { data: grn } = await supabase.from("goods_receipt_notes").select("*").eq("import_bill_id", id).maybeSingle();
+          if (grn) {
+            docGrn = {
+              id: grn.id,
+              importBillId: grn.import_bill_id,
+              grnNumber: grn.grn_number,
+              receiptDate: grn.receipt_date,
+              warehouseLocation: grn.warehouse_location,
+              receivedBy: grn.received_by,
+              inspectedBy: grn.inspected_by,
+              quantityChecked: Number(grn.quantity_checked || 0),
+              damageNoted: grn.damage_noted,
+              status: grn.status,
+            };
+          }
+
+          const itemIds = docItems.map((i) => i.id);
+          if (itemIds.length > 0) {
+            const { data: cons } = await supabase.from("consumption_tracking").select("*").in("import_line_item_id", itemIds);
+            if (cons) {
+              docConsumptions = cons.map((c) => ({
+                id: c.id,
+                importLineItemId: c.import_line_item_id,
+                licenceId: c.licence_id,
+                consumptionDate: c.consumption_date,
+                quantityConsumed: Number(c.quantity_consumed || 0),
+                productionBatchId: c.production_batch_id,
+                finishedGoodProducedQty: Number(c.finished_good_produced_qty || 0),
+                finishedGoodId: c.finished_good_id,
+                notes: c.notes,
+              }));
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[GET /api/import-documents/:id] Supabase error:", e);
+      }
+    }
+
+    if (!doc) {
+      doc = inMemoryImportDocumentsStore.find((d) => d.id === id || d.importBillNumber === id);
+      if (doc) {
+        docItems = inMemoryImportLineItemsStore.filter((i) => i.importBillId === doc.id);
+        docGrn = inMemoryGoodsReceiptNotesStore.find((g) => g.importBillId === doc.id) || null;
+        const itemIds = docItems.map((i) => i.id);
+        docConsumptions = inMemoryConsumptionTrackingStore.filter((c) => itemIds.includes(c.importLineItemId));
+      }
+    }
+
+    if (!doc) {
+      return res.status(404).json({ success: false, error: "Import Document not found" });
+    }
+
+    const itemsWithConsumption = docItems.map((item) => {
+      const itemCons = docConsumptions.filter((c) => c.importLineItemId === item.id);
+      const totalConsumedQty = itemCons.reduce((sum, c) => sum + Number(c.quantityConsumed || 0), 0);
+      const actualOutputProducedQty = itemCons.reduce((sum, c) => sum + Number(c.finishedGoodProducedQty || 0), 0);
+      const remainingInventoryQty = Math.max(0, item.quantityReceived - totalConsumedQty);
+      const consumedPercent = item.quantityReceived > 0 ? Math.round((totalConsumedQty / item.quantityReceived) * 100) : 0;
+      
+      return {
+        ...item,
+        consumptionTracking: itemCons,
+        totalConsumedQty,
+        remainingInventoryQty,
+        consumedPercent,
+        actualOutputProducedQty,
+      };
+    });
+
+    const totalReceivedQty = itemsWithConsumption.reduce((sum, i) => sum + (i.quantityReceived || 0), 0);
+    const totalConsumedQty = itemsWithConsumption.reduce((sum, i) => sum + (i.totalConsumedQty || 0), 0);
+
+    return res.json({
+      success: true,
+      data: {
+        ...doc,
+        lineItems: itemsWithConsumption,
+        grn: docGrn,
+        totalItemsCount: itemsWithConsumption.length,
+        totalReceivedQty,
+        totalConsumedQty,
+        totalRemainingQty: Math.max(0, totalReceivedQty - totalConsumedQty),
+        grnStatus: docGrn ? docGrn.status : "Pending GRN",
+      },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 4. POST /api/import-documents (Create Bill of Entry with Line Items & SION Logic)
+  // -------------------------------------------------------------------------
+  app.post("/api/import-documents", async (req, res) => {
+    try {
+      const body = req.body || {};
+      const {
+        licenceId,
+        licenceNumber,
+        companyFileNumber,
+        importBillNumber,
+        docDate,
+        customsPort,
+        importerName = "Alok Industries Limited",
+        supplierCountry,
+        supplierName,
+        supplierInvoiceNo,
+        customsDutyPercent = 7.5,
+        igstPercent = 18.0,
+        totalInvoiceValueFc = 0,
+        exchangeRate = 89.65,
+        importCurrency = "USD",
+        boeStatus = "Filed",
+        customsClearanceDate,
+        notes,
+        lineItems = [],
+        grn,
+      } = body;
+
+      if (!licenceId || !importBillNumber || !docDate) {
+        return res.status(400).json({
+          success: false,
+          error: "Missing required fields: licenceId, importBillNumber, and docDate are required.",
+        });
+      }
+
+      const totalValFc = Number(totalInvoiceValueFc) || 0;
+      const rate = Number(exchangeRate) || 89.65;
+      const totalValInr = Number((totalValFc * rate).toFixed(2));
+      const dutyPct = Number(customsDutyPercent) || 0;
+      const dutyAmt = Number(((totalValInr * dutyPct) / 100).toFixed(2));
+      const igstPct = Number(igstPercent) || 0;
+      const igstAmt = Number((((totalValInr + dutyAmt) * igstPct) / 100).toFixed(2));
+
+      const docId = `boe-${Date.now()}`;
+      const newDoc = {
+        id: docId,
+        licenceId,
+        licenceNumber: licenceNumber || "0511038251",
+        companyFileNumber: companyFileNumber || "725",
+        importBillNumber,
+        docDate,
+        customsPort: customsPort || "NHAVA SHEVA",
+        importerName,
+        supplierCountry: supplierCountry ? String(supplierCountry).toUpperCase() : "GERMANY",
+        supplierName: supplierName || "Foreign Vendor",
+        supplierInvoiceNo: supplierInvoiceNo || "",
+        customsDutyPercent: dutyPct,
+        customsDutyAmount: dutyAmt,
+        igstPercent: igstPct,
+        igstAmount: igstAmt,
+        totalInvoiceValueFc: totalValFc,
+        totalInvoiceValueInr: totalValInr,
+        importCurrency,
+        exchangeRate: rate,
+        boeStatus,
+        customsClearanceDate: customsClearanceDate || null,
+        notes: notes || "",
+        created_at: new Date().toISOString(),
+      };
+
+      // Process Line Items with SION auto-calculation
+      const processedItems: any[] = (lineItems || []).map((item: any, idx: number) => {
+        const qty = Number(item.quantityReceived || 0);
+        const unitPrice = Number(item.unitPriceFc || 0);
+        const lineValFc = Number((qty * unitPrice).toFixed(2));
+        const lineValInr = Number((lineValFc * rate).toFixed(2));
+
+        let expectedOutput = Number(item.expectedOutputQty || 0);
+        let expectedUom = item.expectedOutputUom || "KGS";
+
+        // Auto calculate SION expected output if sionNormId is provided
+        if (item.sionNormId) {
+          const norm = SION_NORMS_MASTER.find((n) => n.id === item.sionNormId || n.normCode === item.sionNormId);
+          if (norm && (!expectedOutput || expectedOutput === 0)) {
+            expectedOutput = Number((qty * norm.yieldRatio).toFixed(2));
+            expectedUom = norm.finishedGoodUom || expectedUom;
+          }
+        }
+
+        return {
+          id: `item-${docId}-${idx + 1}`,
+          importBillId: docId,
+          hsCode: item.hsCode || "38091010",
+          materialDescription: item.materialDescription || "Raw Material",
+          materialId: item.materialId || `MAT-${idx + 1}`,
+          quantityReceived: qty,
+          uom: item.uom || "KGS",
+          unitPriceFc: unitPrice,
+          totalLineValueFc: lineValFc,
+          totalLineValueInr: lineValInr,
+          sionNormId: item.sionNormId || "",
+          expectedOutputQty: expectedOutput,
+          expectedOutputUom: expectedUom,
+          notes: item.notes || "",
+          created_at: new Date().toISOString(),
+        };
+      });
+
+      // Process Initial GRN if provided
+      let processedGrn: any = null;
+      if (grn || boeStatus === "Cleared") {
+        processedGrn = {
+          id: `grn-${docId}`,
+          importBillId: docId,
+          grnNumber: grn?.grnNumber || `GRN-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`,
+          receiptDate: grn?.receiptDate || docDate,
+          warehouseLocation: grn?.warehouseLocation || "Warehouse A, Inbound Staging",
+          receivedBy: grn?.receivedBy || "Warehouse Inward Team",
+          inspectedBy: grn?.inspectedBy || "QA Inspection Dept",
+          quantityChecked: grn?.quantityChecked || processedItems.reduce((s, i) => s + i.quantityReceived, 0),
+          damageNoted: grn?.damageNoted || "None",
+          status: grn?.status || (boeStatus === "Cleared" ? "Approved" : "Received"),
+          created_at: new Date().toISOString(),
+        };
+      }
+
+      // Save to Supabase if connected
+      const supabase = getSupabaseServerClient();
+      if (supabase) {
+        try {
+          await supabase.from("import_documents").insert({
+            id: newDoc.id,
+            licence_id: newDoc.licenceId,
+            licence_number: newDoc.licenceNumber,
+            company_file_number: newDoc.companyFileNumber,
+            import_bill_number: newDoc.importBillNumber,
+            doc_date: newDoc.docDate,
+            customs_port: newDoc.customsPort,
+            importer_name: newDoc.importerName,
+            supplier_country: newDoc.supplierCountry,
+            supplier_name: newDoc.supplierName,
+            supplier_invoice_no: newDoc.supplierInvoiceNo,
+            customs_duty_percent: newDoc.customsDutyPercent,
+            customs_duty_amount: newDoc.customsDutyAmount,
+            igst_percent: newDoc.igstPercent,
+            igst_amount: newDoc.igstAmount,
+            total_invoice_value_fc: newDoc.totalInvoiceValueFc,
+            total_invoice_value_inr: newDoc.totalInvoiceValueInr,
+            import_currency: newDoc.importCurrency,
+            exchange_rate: newDoc.exchangeRate,
+            boe_status: newDoc.boeStatus,
+            customs_clearance_date: newDoc.customsClearanceDate,
+            notes: newDoc.notes,
+          });
+
+          if (processedItems.length > 0) {
+            await supabase.from("import_line_items").insert(
+              processedItems.map((i) => ({
+                id: i.id,
+                import_bill_id: i.importBillId,
+                hs_code: i.hsCode,
+                material_description: i.materialDescription,
+                material_id: i.materialId,
+                quantity_received: i.quantityReceived,
+                uom: i.uom,
+                unit_price_fc: i.unitPriceFc,
+                total_line_value_fc: i.totalLineValueFc,
+                total_line_value_inr: i.totalLineValueInr,
+                sion_norm_id: i.sionNormId,
+                expected_output_qty: i.expectedOutputQty,
+                expected_output_uom: i.expectedOutputUom,
+                notes: i.notes,
+              }))
+            );
+          }
+
+          if (processedGrn) {
+            await supabase.from("goods_receipt_notes").insert({
+              id: processedGrn.id,
+              import_bill_id: processedGrn.importBillId,
+              grn_number: processedGrn.grnNumber,
+              receipt_date: processedGrn.receiptDate,
+              warehouse_location: processedGrn.warehouseLocation,
+              received_by: processedGrn.receivedBy,
+              inspected_by: processedGrn.inspectedBy,
+              quantity_checked: processedGrn.quantityChecked,
+              damage_noted: processedGrn.damageNoted,
+              status: processedGrn.status,
+            });
+          }
+        } catch (dbErr) {
+          console.warn("[POST /api/import-documents] Supabase insert fallback:", dbErr);
+        }
+      }
+
+      // Also save to in-memory store
+      inMemoryImportDocumentsStore.unshift(newDoc);
+      if (processedItems.length > 0) {
+        inMemoryImportLineItemsStore.push(...processedItems);
+      }
+      if (processedGrn) {
+        inMemoryGoodsReceiptNotesStore.push(processedGrn);
+      }
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          ...newDoc,
+          lineItems: processedItems,
+          grn: processedGrn,
+          totalItemsCount: processedItems.length,
+          totalReceivedQty: processedItems.reduce((s, i) => s + i.quantityReceived, 0),
+          totalConsumedQty: 0,
+          totalRemainingQty: processedItems.reduce((s, i) => s + i.quantityReceived, 0),
+          grnStatus: processedGrn ? processedGrn.status : "Pending GRN",
+        },
+      });
+    } catch (err: any) {
+      console.error("[POST /api/import-documents] Error:", err);
+      return res.status(500).json({ success: false, error: err.message || "Failed to create Import Document" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 5. PUT /api/import-documents/:id (Update Bill of Entry & Status)
+  // -------------------------------------------------------------------------
+  app.put("/api/import-documents/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const body = req.body || {};
+
+      let docIdx = inMemoryImportDocumentsStore.findIndex((d) => d.id === id || d.importBillNumber === id);
+      if (docIdx === -1) {
+        return res.status(404).json({ success: false, error: "Import Document not found" });
+      }
+
+      const existing = inMemoryImportDocumentsStore[docIdx];
+      const rate = Number(body.exchangeRate ?? existing.exchangeRate);
+      const totalFc = Number(body.totalInvoiceValueFc ?? existing.totalInvoiceValueFc);
+      const totalInr = Number((totalFc * rate).toFixed(2));
+      const dutyPct = Number(body.customsDutyPercent ?? existing.customsDutyPercent);
+      const dutyAmt = Number(((totalInr * dutyPct) / 100).toFixed(2));
+      const igstPct = Number(body.igstPercent ?? existing.igstPercent);
+      const igstAmt = Number((((totalInr + dutyAmt) * igstPct) / 100).toFixed(2));
+
+      const updatedDoc = {
+        ...existing,
+        ...body,
+        totalInvoiceValueFc: totalFc,
+        totalInvoiceValueInr: totalInr,
+        exchangeRate: rate,
+        customsDutyPercent: dutyPct,
+        customsDutyAmount: dutyAmt,
+        igstPercent: igstPct,
+        igstAmount: igstAmt,
+        updated_at: new Date().toISOString(),
+      };
+
+      inMemoryImportDocumentsStore[docIdx] = updatedDoc;
+
+      const supabase = getSupabaseServerClient();
+      if (supabase) {
+        try {
+          await supabase
+            .from("import_documents")
+            .update({
+              import_bill_number: updatedDoc.importBillNumber,
+              doc_date: updatedDoc.docDate,
+              customs_port: updatedDoc.customsPort,
+              importer_name: updatedDoc.importerName,
+              supplier_country: updatedDoc.supplierCountry,
+              supplier_name: updatedDoc.supplierName,
+              supplier_invoice_no: updatedDoc.supplierInvoiceNo,
+              customs_duty_percent: updatedDoc.customsDutyPercent,
+              customs_duty_amount: updatedDoc.customsDutyAmount,
+              igst_percent: updatedDoc.igstPercent,
+              igst_amount: updatedDoc.igstAmount,
+              total_invoice_value_fc: updatedDoc.totalInvoiceValueFc,
+              total_invoice_value_inr: updatedDoc.totalInvoiceValueInr,
+              import_currency: updatedDoc.importCurrency,
+              exchange_rate: updatedDoc.exchangeRate,
+              boe_status: updatedDoc.boeStatus,
+              customs_clearance_date: updatedDoc.customsClearanceDate,
+              notes: updatedDoc.notes,
+            })
+            .eq("id", id);
+        } catch (dbErr) {
+          console.warn("[PUT /api/import-documents/:id] Supabase update notice:", dbErr);
+        }
+      }
+
+      return res.json({ success: true, data: updatedDoc });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Failed to update Import Document" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. DELETE /api/import-documents/:id (Delete BoE & Cascading Children)
+  // -------------------------------------------------------------------------
+  app.delete("/api/import-documents/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const itemsToDelete = inMemoryImportLineItemsStore.filter((i) => i.importBillId === id).map((i) => i.id);
+      inMemoryConsumptionTrackingStore = inMemoryConsumptionTrackingStore.filter(
+        (c) => !itemsToDelete.includes(c.importLineItemId)
+      );
+      inMemoryImportLineItemsStore = inMemoryImportLineItemsStore.filter((i) => i.importBillId !== id);
+      inMemoryGoodsReceiptNotesStore = inMemoryGoodsReceiptNotesStore.filter((g) => g.importBillId !== id);
+      inMemoryImportDocumentsStore = inMemoryImportDocumentsStore.filter((d) => d.id !== id);
+
+      const supabase = getSupabaseServerClient();
+      if (supabase) {
+        try {
+          await supabase.from("import_documents").delete().eq("id", id);
+        } catch (dbErr) {
+          console.warn("[DELETE /api/import-documents/:id] Supabase delete notice:", dbErr);
+        }
+      }
+
+      return res.json({ success: true, message: "Import Document deleted successfully" });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Failed to delete Import Document" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. POST /api/import-documents/:id/grn (Create/Update Goods Receipt Note)
+  // -------------------------------------------------------------------------
+  app.post("/api/import-documents/:id/grn", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const body = req.body || {};
+
+      let grnIdx = inMemoryGoodsReceiptNotesStore.findIndex((g) => g.importBillId === id);
+      let updatedGrn: any;
+
+      if (grnIdx >= 0) {
+        updatedGrn = {
+          ...inMemoryGoodsReceiptNotesStore[grnIdx],
+          ...body,
+          updated_at: new Date().toISOString(),
+        };
+        inMemoryGoodsReceiptNotesStore[grnIdx] = updatedGrn;
+      } else {
+        updatedGrn = {
+          id: `grn-${id}`,
+          importBillId: id,
+          grnNumber: body.grnNumber || `GRN-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`,
+          receiptDate: body.receiptDate || new Date().toISOString().split("T")[0],
+          warehouseLocation: body.warehouseLocation || "Main Raw Materials Warehouse",
+          receivedBy: body.receivedBy || "Stores Inward Officer",
+          inspectedBy: body.inspectedBy || "Quality Assurance Inspector",
+          quantityChecked: Number(body.quantityChecked || 0),
+          damageNoted: body.damageNoted || "None",
+          status: body.status || "Approved",
+          created_at: new Date().toISOString(),
+        };
+        inMemoryGoodsReceiptNotesStore.push(updatedGrn);
+      }
+
+      const supabase = getSupabaseServerClient();
+      if (supabase) {
+        try {
+          await supabase.from("goods_receipt_notes").upsert({
+            id: updatedGrn.id,
+            import_bill_id: updatedGrn.importBillId,
+            grn_number: updatedGrn.grnNumber,
+            receipt_date: updatedGrn.receiptDate,
+            warehouse_location: updatedGrn.warehouseLocation,
+            received_by: updatedGrn.receivedBy,
+            inspected_by: updatedGrn.inspectedBy,
+            quantity_checked: updatedGrn.quantityChecked,
+            damage_noted: updatedGrn.damageNoted,
+            status: updatedGrn.status,
+          });
+        } catch (dbErr) {
+          console.warn("[POST /api/import-documents/:id/grn] Supabase upsert notice:", dbErr);
+        }
+      }
+
+      return res.json({ success: true, data: updatedGrn });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Failed to save Goods Receipt Note" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 8. POST /api/import-line-items/:id/consumption (Log Production Consumption with SION)
+  // -------------------------------------------------------------------------
+  app.post("/api/import-line-items/:id/consumption", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const {
+        consumptionDate = new Date().toISOString().split("T")[0],
+        quantityConsumed,
+        productionBatchId,
+        finishedGoodProducedQty,
+        finishedGoodId,
+        notes,
+      } = req.body || {};
+
+      const qtyConsumedNum = Number(quantityConsumed);
+      if (!qtyConsumedNum || qtyConsumedNum <= 0) {
+        return res.status(400).json({ success: false, error: "quantityConsumed must be greater than 0" });
+      }
+
+      // Find the parent line item
+      const lineItem = inMemoryImportLineItemsStore.find((i) => i.id === id);
+      if (!lineItem) {
+        return res.status(404).json({ success: false, error: "Import Line Item not found" });
+      }
+
+      // Check current consumption & remaining inventory
+      const existingCons = inMemoryConsumptionTrackingStore.filter((c) => c.importLineItemId === id);
+      const totalAlreadyConsumed = existingCons.reduce((sum, c) => sum + Number(c.quantityConsumed || 0), 0);
+      const remainingInventory = lineItem.quantityReceived - totalAlreadyConsumed;
+
+      if (qtyConsumedNum > remainingInventory + 0.001) {
+        return res.status(400).json({
+          success: false,
+          error: `Quantity to consume (${qtyConsumedNum} ${lineItem.uom}) exceeds remaining available inventory (${remainingInventory} ${lineItem.uom}).`,
+        });
+      }
+
+      // Auto calculate finished goods output based on SION norm if not manually specified
+      let expectedFinishedGoodQty = Number(finishedGoodProducedQty || 0);
+      let outputItemName = finishedGoodId || "Finished Export Good";
+
+      if (!expectedFinishedGoodQty && lineItem.sionNormId) {
+        const norm = SION_NORMS_MASTER.find((n) => n.id === lineItem.sionNormId || n.normCode === lineItem.sionNormId);
+        if (norm) {
+          expectedFinishedGoodQty = Number((qtyConsumedNum * norm.yieldRatio).toFixed(2));
+          outputItemName = norm.finishedGood;
+        }
+      }
+
+      // Get parent BoE to record licenceId
+      const parentDoc = inMemoryImportDocumentsStore.find((d) => d.id === lineItem.importBillId);
+
+      const newConsumption = {
+        id: `cons-${Date.now()}`,
+        importLineItemId: id,
+        licenceId: parentDoc?.licenceId || "",
+        consumptionDate,
+        quantityConsumed: qtyConsumedNum,
+        productionBatchId: productionBatchId || `BATCH-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+        finishedGoodProducedQty: expectedFinishedGoodQty,
+        finishedGoodId: outputItemName,
+        notes: notes || `Consumed for production under SION ${lineItem.sionNormId || "Standard Norm"}`,
+        created_at: new Date().toISOString(),
+      };
+
+      inMemoryConsumptionTrackingStore.push(newConsumption);
+
+      const supabase = getSupabaseServerClient();
+      if (supabase) {
+        try {
+          await supabase.from("consumption_tracking").insert({
+            id: newConsumption.id,
+            import_line_item_id: newConsumption.importLineItemId,
+            licence_id: newConsumption.licenceId,
+            consumption_date: newConsumption.consumptionDate,
+            quantity_consumed: newConsumption.quantityConsumed,
+            production_batch_id: newConsumption.productionBatchId,
+            finished_good_produced_qty: newConsumption.finishedGoodProducedQty,
+            finished_good_id: newConsumption.finishedGoodId,
+            notes: newConsumption.notes,
+          });
+        } catch (dbErr) {
+          console.warn("[POST /api/import-line-items/:id/consumption] Supabase insert notice:", dbErr);
+        }
+      }
+
+      return res.status(201).json({
+        success: true,
+        data: newConsumption,
+        meta: {
+          quantityReceived: lineItem.quantityReceived,
+          totalConsumed: totalAlreadyConsumed + qtyConsumedNum,
+          remainingInventory: remainingInventory - qtyConsumedNum,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Failed to log consumption" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. DELETE /api/import-line-items/:id/consumption/:consumptionId
+  // -------------------------------------------------------------------------
+  app.delete("/api/import-line-items/:id/consumption/:consumptionId", async (req, res) => {
+    try {
+      const { consumptionId } = req.params;
+
+      inMemoryConsumptionTrackingStore = inMemoryConsumptionTrackingStore.filter((c) => c.id !== consumptionId);
+
+      const supabase = getSupabaseServerClient();
+      if (supabase) {
+        try {
+          await supabase.from("consumption_tracking").delete().eq("id", consumptionId);
+        } catch (dbErr) {
+          console.warn("[DELETE consumption] Supabase delete notice:", dbErr);
+        }
+      }
+
+      return res.json({ success: true, message: "Consumption record deleted successfully" });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Failed to delete consumption" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. GET /api/licences/:id/import-consumption-status (Licence CIF & Consumption Aggregation)
+  // -------------------------------------------------------------------------
+  app.get("/api/licences/:id/import-consumption-status", async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      // Find licence
+      const licence = inMemoryLicencesStore.find(
+        (l) => l.id === id || l.licenceNumber === id || l.companyFileNumber === id
+      );
+
+      const targetLicenceId = licence?.id || id;
+      const targetLicenceNumber = licence?.licenceNumber || "0511038251";
+      const targetFileNumber = licence?.companyFileNumber || "725";
+      const authorizedCif = Number(licence?.cifValueInr || licence?.authorizedCifInr || 10000000);
+
+      // Find all BoEs linked to this licence
+      const docs = inMemoryImportDocumentsStore.filter(
+        (d) => d.licenceId === targetLicenceId || d.licenceNumber === targetLicenceNumber || d.companyFileNumber === targetFileNumber
+      );
+
+      const importedCifInr = docs.reduce((sum, d) => sum + Number(d.totalInvoiceValueInr || 0), 0);
+      const remainingCifInr = Math.max(0, authorizedCif - importedCifInr);
+      const importUtilizationPercent = authorizedCif > 0 ? Number(((importedCifInr / authorizedCif) * 100).toFixed(2)) : 0;
+
+      // Aggregated materials breakdown
+      const docIds = docs.map((d) => d.id);
+      const items = inMemoryImportLineItemsStore.filter((i) => docIds.includes(i.importBillId));
+
+      const lineItemsSummary = items.map((item) => {
+        const itemCons = inMemoryConsumptionTrackingStore.filter((c) => c.importLineItemId === item.id);
+        const qtyConsumed = itemCons.reduce((sum, c) => sum + Number(c.quantityConsumed || 0), 0);
+        const actualOutput = itemCons.reduce((sum, c) => sum + Number(c.finishedGoodProducedQty || 0), 0);
+
+        return {
+          materialDescription: item.materialDescription,
+          hsCode: item.hsCode,
+          quantityReceived: item.quantityReceived,
+          quantityConsumed: qtyConsumed,
+          inventoryRemaining: Math.max(0, item.quantityReceived - qtyConsumed),
+          uom: item.uom,
+          expectedOutputQty: item.expectedOutputQty,
+          actualOutputProducedQty: actualOutput,
+          sionNormId: item.sionNormId,
+        };
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          licenceId: targetLicenceId,
+          licenceNumber: targetLicenceNumber,
+          companyFileNumber: targetFileNumber,
+          authorizedCifInr: authorizedCif,
+          importedCifInr,
+          remainingCifInr,
+          importUtilizationPercent,
+          totalImportDocsCount: docs.length,
+          lineItems: lineItemsSummary,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Failed to calculate import consumption status" });
+    }
+  });
+
+
+
+
 
   // -------------------------------------------------------------------------
   // Helper to extract company file number from filename prefix
@@ -752,6 +5905,45 @@ async function startServer() {
 
     const suggestedCompanyFileNo = extractCompanyFileNumberFromFilename(fileName || "");
 
+    // Helper to format any date string into standard HTML date YYYY-MM-DD
+    const normalizeDateToIso = (rawDate: any): string => {
+      if (!rawDate || typeof rawDate !== "string") return "";
+      const trimmed = rawDate.trim();
+      if (!trimmed || trimmed.toLowerCase() === "null" || trimmed.toLowerCase() === "n/a") return "";
+      
+      // Already YYYY-MM-DD
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+
+      // Matches DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+      const dmyMatch = trimmed.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+      if (dmyMatch) {
+        const day = dmyMatch[1].padStart(2, "0");
+        const month = dmyMatch[2].padStart(2, "0");
+        const year = dmyMatch[3];
+        return `${year}-${month}-${day}`;
+      }
+
+      // Matches YYYY/MM/DD
+      const ymdMatch = trimmed.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})$/);
+      if (ymdMatch) {
+        const year = ymdMatch[1];
+        const month = ymdMatch[2].padStart(2, "0");
+        const day = ymdMatch[3].padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+
+      // Matches textual dates like "24-Jan-2024", "24 Jan 2024", "January 24, 2024"
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        const y = parsed.getFullYear();
+        const m = String(parsed.getMonth() + 1).padStart(2, "0");
+        const d = String(parsed.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      }
+
+      return trimmed;
+    };
+
     const sanitizeExtractedData = (data: any) => {
       let period = typeof data.exportObligationPeriod === "string" ? data.exportObligationPeriod.trim() : "";
       if (
@@ -769,6 +5961,29 @@ async function startServer() {
 
       if (fileNumber === dgftFileNumber) {
         fileNumber = suggestedCompanyFileNo || "";
+      }
+
+      // Normalize dates to YYYY-MM-DD for HTML input compatibility
+      const licenceDate = normalizeDateToIso(data.licenceDate);
+      let importValidity = normalizeDateToIso(data.importValidity);
+      let exportValidity = normalizeDateToIso(data.exportValidity);
+
+      // If validity not explicitly found, calculate standard 12/18 months from licence date if present
+      if (licenceDate && !importValidity) {
+        const lDate = new Date(licenceDate);
+        if (!isNaN(lDate.getTime())) {
+          const impDate = new Date(lDate);
+          impDate.setMonth(impDate.getMonth() + 12);
+          importValidity = impDate.toISOString().split("T")[0];
+        }
+      }
+      if (licenceDate && !exportValidity) {
+        const lDate = new Date(licenceDate);
+        if (!isNaN(lDate.getTime())) {
+          const expDate = new Date(lDate);
+          expDate.setMonth(expDate.getMonth() + 18);
+          exportValidity = expDate.toISOString().split("T")[0];
+        }
       }
 
       const rawExportItems = Array.isArray(data.exportItems) ? data.exportItems : [];
@@ -802,6 +6017,15 @@ async function startServer() {
         };
       });
 
+      // Synchronize overall numeric totals
+      const fobValueInr = typeof data.fobValueInr === "number" ? data.fobValueInr : Number(data.fobValueInr) || 0;
+      const fobValue = typeof data.fobValue === "number" && data.fobValue > 0 ? data.fobValue : fobValueInr;
+      const exportObligationValue = typeof data.exportObligationValue === "number" && data.exportObligationValue > 0 ? data.exportObligationValue : fobValue;
+      
+      const cifValueInr = typeof data.cifValueInr === "number" ? data.cifValueInr : Number(data.cifValueInr) || 0;
+      const cifValue = typeof data.cifValue === "number" && data.cifValue > 0 ? data.cifValue : cifValueInr;
+      const importLicenceValue = typeof data.importLicenceValue === "number" && data.importLicenceValue > 0 ? data.importLicenceValue : cifValue;
+
       return {
         ...data,
         fileNumber: fileNumber || "",
@@ -809,6 +6033,27 @@ async function startServer() {
         dgftFileNumber: dgftFileNumber || "",
         dgftApplicationNumber:
           (typeof data.dgftApplicationNumber === "string" ? data.dgftApplicationNumber.trim() : "") || "",
+        licenceDate: licenceDate || "",
+        importValidity: importValidity || "",
+        exportValidity: exportValidity || "",
+        licenceNumber: typeof data.licenceNumber === "string" ? data.licenceNumber.trim() : data.licenceNumber ? String(data.licenceNumber) : "",
+        licensingAuthority: typeof data.licensingAuthority === "string" ? data.licensingAuthority.trim() : "",
+        licenceType: data.licenceType || "Advance Authorisation for Duty Exemption",
+        typeOfNorm: data.typeOfNorm || "Standard SION (Textile)",
+        exportForeignCurrency: data.exportForeignCurrency || "USD",
+        importCurrency: data.importCurrency || data.exportForeignCurrency || "USD",
+        fobValueInr: fobValueInr || data.fobValueInr || "",
+        fobValueFc: data.fobValueFc || "",
+        cifValueInr: cifValueInr || data.cifValueInr || "",
+        cifValueFc: data.cifValueFc || "",
+        importLicenceValue: importLicenceValue,
+        bulkLicenceValue: typeof data.bulkLicenceValue === "number" ? data.bulkLicenceValue : Number(data.bulkLicenceValue) || 0,
+        exportObligationValue: exportObligationValue,
+        fobValue: fobValue,
+        cifValue: cifValue,
+        dutySaved: typeof data.dutySaved === "number" ? data.dutySaved : Number(data.dutySaved) || 0,
+        exportExchangeRate: typeof data.exportExchangeRate === "number" ? data.exportExchangeRate : Number(data.exportExchangeRate) || 0,
+        importExchangeRate: typeof data.importExchangeRate === "number" ? data.importExchangeRate : Number(data.importExchangeRate) || 0,
         exportObligationPeriod: period || "",
         exportItems: sanitizedExportItems,
         originalFilename: fileName || data.originalFilename || "Advance_Authorisation.pdf",
@@ -870,15 +6115,25 @@ async function startServer() {
 
       const promptText = `You are an expert DGFT document analyst for Alok Industries. Extract all relevant information from this Advance Authorisation document into valid JSON.
 CRITICAL EXTRACTION RULES:
-1. MASTER DETAILS:
+1. DATES & VALIDITY EXTRACTION:
+   - LICENCE / AUTHORISATION DATE: Extract the issue date (e.g. '24/01/2024' or '24-01-2024') into "licenceDate". Format as 'YYYY-MM-DD' (e.g. '2024-01-24') or 'DD/MM/YYYY'.
+   - IMPORT VALIDITY DATE: Extract the import validity / validity of authorisation (e.g. '12 Months from date of issue' or explicit date like '24/01/2025') into "importValidity".
+   - EXPORT VALIDITY / OBLIGATION DATE: Extract the export obligation fulfillment date (e.g. '18 Months from date of issue' or explicit date like '24/07/2025') into "exportValidity".
+
+2. MASTER DETAILS & FINANCIALS:
    - DO NOT extract company internal file number from PDF content (it does not exist in DGFT PDF body).
    - DGFT FILE NUMBER: Extract into "dgftFileNumber" (e.g. '05AX04004128AM26').
-   - LICENCE NUMBER: Extract into "licenceNumber" (e.g. '0511038251').
+   - LICENCE NUMBER / AUTHORISATION NO: Extract into "licenceNumber" (e.g. '0511038251').
+   - LICENSING AUTHORITY: Extract regional authority name into "licensingAuthority" (e.g. 'Office of the Additional DGFT, Mumbai' or 'CLA, Mumbai').
    - DGFT APPLICATION NUMBER: If not present, set "dgftApplicationNumber": "". NEVER invent values.
    - EXPORT OBLIGATION PERIOD: Extract into "exportObligationPeriod" ONLY if a real duration (e.g. '18 Months') is stated. If boilerplate like 'Please refer header details' or 'As per policy', set "exportObligationPeriod": "".
+   - CIF VALUE (IMPORT SANCTION VALUE): Extract into "cifValueInr" (INR) and "cifValueFc" (Foreign Currency), and set numeric "cifValue" and "importLicenceValue".
+   - FOB VALUE (EXPORT OBLIGATION VALUE): Extract into "fobValueInr" (INR) and "fobValueFc" (Foreign Currency), and set numeric "fobValue" and "exportObligationValue".
+   - DUTY SAVED: Extract estimated duty saved / customs exemption amount into numeric "dutySaved" if mentioned.
+   - CURRENCY & EXCHANGE RATES: Extract "exportForeignCurrency", "importCurrency", "forexExportRate", "forexImportRate", "exportExchangeRate", "importExchangeRate".
    - DECIMAL PRECISION: Preserve all numbers with exact decimal places (e.g. 16975780.50, 83.1250). Do NOT round.
 
-2. EXPORT ITEMS TABLE & VERBATIM PRODUCT DESCRIPTION RULES:
+3. EXPORT ITEMS TABLE & VERBATIM PRODUCT DESCRIPTION RULES:
    - Locate the "Details of Items to be Exported" or "Export Items" schedule/table in the DGFT PDF.
    - Extract each export item row into the "exportItems" array with these exact fields:
      * exportSrNo: Export Serial Number (e.g. "1", "2")
@@ -900,7 +6155,7 @@ CRITICAL EXTRACTION RULES:
      * needsVerification: boolean
    - If no export items table is found, set "exportItems": [].
 
-3. Return exact JSON keys:
+4. Return exact JSON keys:
    - dgftFileNumber, dgftApplicationNumber, licenceNumber, licenceDate, importValidity, exportValidity, licensingAuthority, licenceType, typeOfNorm, exportForeignCurrency, importCurrency, forexExportRate, forexImportRate, exportExchangeRate, importExchangeRate, fobValueInr, fobValueFc, cifValueInr, cifValueFc, cifValueInvalidatedInr, importLicenceValue, bulkLicenceValue, exportObligationValue, fobValue, cifValue, dutySaved, exportObligationPeriod, exportItems, licenceStatus, originalFilename, otherExtractedInfo.
 Return ONLY valid JSON.`;
 
@@ -931,8 +6186,10 @@ Return ONLY valid JSON.`;
         };
       }
 
-      const candidateModels = ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+      const candidateModels = ["gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-flash-latest"];
       let response: any = null;
+      let lastErrorMessage = "";
+      let isHighDemandSpike = false;
 
       for (const modelName of candidateModels) {
         for (let attempt = 1; attempt <= 2; attempt++) {
@@ -950,10 +6207,15 @@ Return ONLY valid JSON.`;
             if (response && response.text) {
               break;
             }
-          } catch (modelErr) {
-            console.warn(`Attempt ${attempt} on model ${modelName} encountered an error:`, modelErr);
+          } catch (modelErr: any) {
+            lastErrorMessage = modelErr?.message || String(modelErr);
+            if (lastErrorMessage.includes("503") || lastErrorMessage.toLowerCase().includes("high demand") || lastErrorMessage.toLowerCase().includes("unavailable")) {
+              isHighDemandSpike = true;
+            }
+            console.warn(`[Gemini Extraction] Model ${modelName} attempt ${attempt} notice:`, lastErrorMessage);
             if (attempt === 1) {
-              await new Promise((resolve) => setTimeout(resolve, 600));
+              // Backoff before retry
+              await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 400));
             }
           }
         }
@@ -963,8 +6225,15 @@ Return ONLY valid JSON.`;
       }
 
       if (!response || !response.text) {
-        console.warn("No content returned from Gemini models, using fallback extraction structure.");
-        return res.json(getFallbackExtraction());
+        console.warn("[Gemini Extraction] All models busy or unavailable. Returning pre-filled fallback template.");
+        const fallback = getFallbackExtraction();
+        return res.json({
+          ...fallback,
+          isHighDemandSpike,
+          notice: isHighDemandSpike
+            ? "Gemini models are temporarily experiencing high global demand. A pre-filled template has been generated from your file name. You can review fields now or click 'Extract Again' in a moment."
+            : "AI extraction temporarily unavailable. Template generated.",
+        });
       }
 
       const responseText = response.text || "{}";

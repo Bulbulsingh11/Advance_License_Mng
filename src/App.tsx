@@ -4,6 +4,10 @@ import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { LicencesPage } from './components/LicencesPage';
+import { MaterialsPage } from './components/MaterialsPage';
+import { ImportTransactionsPage } from './components/ImportTransactionsPage';
+import { ExportsPage } from './components/ExportsPage';
+import { UtilizationPage } from './components/UtilizationPage';
 import { PlaceholderPage } from './components/PlaceholderPage';
 
 export default function App() {
@@ -26,6 +30,14 @@ export default function App() {
             <Dashboard onNavigate={setCurrentModule} />
           ) : currentModule === 'licences' ? (
             <LicencesPage />
+          ) : currentModule === 'materials' ? (
+            <MaterialsPage />
+          ) : currentModule === 'imports' ? (
+            <ImportTransactionsPage />
+          ) : currentModule === 'exports' ? (
+            <ExportsPage />
+          ) : currentModule === 'utilization' ? (
+            <UtilizationPage onNavigate={setCurrentModule} />
           ) : (
             <PlaceholderPage moduleId={currentModule} onNavigate={setCurrentModule} />
           )}
@@ -34,3 +46,5 @@ export default function App() {
     </div>
   );
 }
+
+

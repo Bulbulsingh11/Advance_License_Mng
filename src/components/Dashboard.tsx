@@ -218,6 +218,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
               </div>
 
               <div 
+                onClick={() => onNavigate('utilization')}
+                className="p-4 rounded-xl border border-blue-200 bg-blue-50/20 hover:border-blue-500/80 hover:bg-blue-50/60 transition-all cursor-pointer group"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-xs">
+                      UT
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <h4 className="text-sm font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
+                          Utilization Dashboard
+                        </h4>
+                        <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-1.5 py-0.2 rounded">
+                          Phase 4
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500">Real-time FOB consumption, forecasts & compliance alerts</p>
+                    </div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" />
+                </div>
+              </div>
+
+              <div 
                 onClick={() => onNavigate('reconciliation')}
                 className="p-4 rounded-xl border border-slate-200 hover:border-purple-500/50 hover:bg-purple-50/30 transition-all cursor-pointer group"
               >

@@ -346,9 +346,29 @@ export const LicencesPage: React.FC = () => {
         // 4. Licence / Authorisation Number (extracted from PDF)
         setLicenceNumber(ext.licenceNumber || '');
 
-        setLicenceDate(ext.licenceDate || '');
-        setImportValidity(ext.importValidity || '');
-        setExportValidity(ext.exportValidity || '');
+        // Helper to ensure dates fit HTML <input type="date">
+        const toInputDate = (d: any): string => {
+          if (!d || typeof d !== 'string') return '';
+          const trimmed = d.trim();
+          if (!trimmed || trimmed.toLowerCase() === 'null' || trimmed.toLowerCase() === 'n/a') return '';
+          if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+          const match = trimmed.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+          if (match) {
+            return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+          }
+          const parsed = new Date(trimmed);
+          if (!isNaN(parsed.getTime())) {
+            const y = parsed.getFullYear();
+            const m = String(parsed.getMonth() + 1).padStart(2, '0');
+            const day = String(parsed.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+          }
+          return trimmed;
+        };
+
+        setLicenceDate(toInputDate(ext.licenceDate));
+        setImportValidity(toInputDate(ext.importValidity));
+        setExportValidity(toInputDate(ext.exportValidity));
         setLicensingAuthority(ext.licensingAuthority || '');
         setLicenceType(ext.licenceType || 'Advance Authorisation for Duty Exemption');
         setTypeOfNorm(ext.typeOfNorm || 'Standard SION (Textile)');
@@ -378,7 +398,11 @@ export const LicencesPage: React.FC = () => {
 
         setExtractedFlag(true);
         const expCount = Array.isArray(ext.exportItems) ? ext.exportItems.length : 0;
-        setExtractionSuccessMsg(`Data extracted successfully (${expCount} Export Item${expCount === 1 ? '' : 's'} detected). Please review and verify all fields below.`);
+        if (data.notice) {
+          setExtractionSuccessMsg(data.notice);
+        } else {
+          setExtractionSuccessMsg(`Data extracted successfully (${expCount} Export Item${expCount === 1 ? '' : 's'} detected). Please review and verify all fields below.`);
+        }
       } else {
         alert('Extraction completed with warnings. Please review fields manually.');
       }
