@@ -17,9 +17,11 @@ import {
   Info,
   CheckCircle,
   Database,
-  RefreshCw
+  RefreshCw,
+  AlertCircle,
+  Check
 } from 'lucide-react';
-import { AdvanceLicence, ExportItem } from '../types';
+import { AdvanceLicence, ExportItem, ImportItem } from '../types';
 import { 
   fetchLicencesFromDB, 
   saveLicenceToDB, 
@@ -144,6 +146,9 @@ export const LicencesPage: React.FC = () => {
   const [exportItems, setExportItems] = useState<ExportItem[]>([]);
   const [editExportItems, setEditExportItems] = useState<ExportItem[]>([]);
 
+  const [importItems, setImportItems] = useState<ImportItem[]>([]);
+  const [editImportItems, setEditImportItems] = useState<ImportItem[]>([]);
+
   // Handlers for Add Licence Export Items
   const handleExportItemChange = (index: number, field: keyof ExportItem, value: any) => {
     setExportItems(prev => {
@@ -155,6 +160,14 @@ export const LicencesPage: React.FC = () => {
           next[index].needsVerification = false;
         }
       }
+      return next;
+    });
+  };
+
+  const handleToggleExportItemVerification = (index: number) => {
+    setExportItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], needsVerification: !next[index].needsVerification };
       return next;
     });
   };
@@ -197,6 +210,14 @@ export const LicencesPage: React.FC = () => {
     });
   };
 
+  const handleToggleEditExportItemVerification = (index: number) => {
+    setEditExportItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], needsVerification: !next[index].needsVerification };
+      return next;
+    });
+  };
+
   const handleAddEditExportItemRow = () => {
     const nextSrNo = String(editExportItems.length + 1);
     setEditExportItems(prev => [
@@ -219,6 +240,109 @@ export const LicencesPage: React.FC = () => {
 
   const handleDeleteEditExportItemRow = (index: number) => {
     setEditExportItems(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Handlers for Add Licence Import Items
+  const handleImportItemChange = (index: number, field: keyof ImportItem, value: any) => {
+    setImportItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      // If user inputs critical fields, clear verification flag if not explicitly set
+      if (field === 'inputDescription' || field === 'itcHsCode' || field === 'quantity' || field === 'cifValueInr') {
+        if (next[index].inputDescription && next[index].itcHsCode && Number(next[index].quantity) > 0 && Number(next[index].cifValueInr) > 0) {
+          next[index].needsVerification = false;
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleToggleImportItemVerification = (index: number) => {
+    setImportItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], needsVerification: !next[index].needsVerification };
+      return next;
+    });
+  };
+
+  const handleAddImportItemRow = () => {
+    const nextSrNo = String(importItems.length + 1);
+    setImportItems(prev => [
+      ...prev,
+      {
+        id: `imp-${Date.now()}-${prev.length + 1}`,
+        inputSrNo: nextSrNo,
+        inputDescription: '',
+        technicalDescription: '',
+        sionSrNo: '',
+        exportSrNo: exportItems.length > 0 ? (exportItems[0].exportSrNo || '1') : '1',
+        itcHsCode: '',
+        quantity: 0,
+        uom: 'KGS',
+        cifValueInr: 0,
+        cifValueFc: 0,
+        currency: importCurrency || exportForeignCurrency || 'USD',
+        dutySavedInr: 0,
+        dutySavedPercent: 0,
+        needsVerification: false,
+        verificationNotes: ''
+      }
+    ]);
+  };
+
+  const handleDeleteImportItemRow = (index: number) => {
+    setImportItems(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Handlers for Edit Licence Import Items
+  const handleEditImportItemChange = (index: number, field: keyof ImportItem, value: any) => {
+    setEditImportItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      if (field === 'inputDescription' || field === 'itcHsCode' || field === 'quantity' || field === 'cifValueInr') {
+        if (next[index].inputDescription && next[index].itcHsCode && Number(next[index].quantity) > 0 && Number(next[index].cifValueInr) > 0) {
+          next[index].needsVerification = false;
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleToggleEditImportItemVerification = (index: number) => {
+    setEditImportItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], needsVerification: !next[index].needsVerification };
+      return next;
+    });
+  };
+
+  const handleAddEditImportItemRow = () => {
+    const nextSrNo = String(editImportItems.length + 1);
+    setEditImportItems(prev => [
+      ...prev,
+      {
+        id: `imp-${Date.now()}-${prev.length + 1}`,
+        inputSrNo: nextSrNo,
+        inputDescription: '',
+        technicalDescription: '',
+        sionSrNo: '',
+        exportSrNo: editExportItems.length > 0 ? (editExportItems[0].exportSrNo || '1') : '1',
+        itcHsCode: '',
+        quantity: 0,
+        uom: 'KGS',
+        cifValueInr: 0,
+        cifValueFc: 0,
+        currency: editImportCurrency || editExportForeignCurrency || 'USD',
+        dutySavedInr: 0,
+        dutySavedPercent: 0,
+        needsVerification: false,
+        verificationNotes: ''
+      }
+    ]);
+  };
+
+  const handleDeleteEditImportItemRow = (index: number) => {
+    setEditImportItems(prev => prev.filter((_, i) => i !== index));
   };
   const loadLicences = async () => {
     setIsLoading(true);
@@ -394,14 +518,16 @@ export const LicencesPage: React.FC = () => {
         setLicenceStatus(ext.licenceStatus || 'Active');
         setOriginalFilename(ext.originalFilename || uploadedDoc?.name || '');
         setExportItems(Array.isArray(ext.exportItems) ? ext.exportItems : []);
+        setImportItems(Array.isArray(ext.importItems) ? ext.importItems : []);
         setOtherExtractedInfo(Array.isArray(ext.otherExtractedInfo) ? ext.otherExtractedInfo : []);
 
         setExtractedFlag(true);
         const expCount = Array.isArray(ext.exportItems) ? ext.exportItems.length : 0;
+        const impCount = Array.isArray(ext.importItems) ? ext.importItems.length : 0;
         if (data.notice) {
           setExtractionSuccessMsg(data.notice);
         } else {
-          setExtractionSuccessMsg(`Data extracted successfully (${expCount} Export Item${expCount === 1 ? '' : 's'} detected). Please review and verify all fields below.`);
+          setExtractionSuccessMsg(`Data extracted successfully (${expCount} Export Item${expCount === 1 ? '' : 's'}, ${impCount} Import Item${impCount === 1 ? '' : 's'} detected). Please review and verify all fields below.`);
         }
       } else {
         alert('Extraction completed with warnings. Please review fields manually.');
@@ -467,6 +593,11 @@ export const LicencesPage: React.FC = () => {
         licenceId: uniqueId,
         licenceNumber: licenceNumber
       })),
+      importItems: importItems.map(item => ({
+        ...item,
+        licenceId: uniqueId,
+        licenceNumber: licenceNumber
+      })),
       originalDocument: uploadedDoc,
       originalFilename: originalFilename || uploadedDoc?.name,
       extractedFromPdf: extractedFlag,
@@ -517,6 +648,7 @@ export const LicencesPage: React.FC = () => {
       setExportObligationPeriod('');
       setLicenceStatus('Active');
       setExportItems([]);
+      setImportItems([]);
       setUploadedDoc(null);
       setOriginalFilename('');
       setExtractedFlag(false);
@@ -569,6 +701,7 @@ export const LicencesPage: React.FC = () => {
     setEditExportObligationPeriod(lic.exportObligationPeriod || '');
     setEditLicenceStatus(lic.licenceStatus || 'Active');
     setEditExportItems(lic.exportItems || []);
+    setEditImportItems(lic.importItems || []);
     setEditUploadedDoc(lic.originalDocument || null);
     setEditOriginalFilename(lic.originalFilename || lic.originalDocument?.name || '');
     setEditOtherExtractedInfo(lic.otherExtractedInfo || []);
@@ -610,6 +743,11 @@ export const LicencesPage: React.FC = () => {
       exportObligationPeriod: editExportObligationPeriod,
       licenceStatus: editLicenceStatus,
       exportItems: editExportItems.map(item => ({
+        ...item,
+        licenceId: editingLicence.id,
+        licenceNumber: editLicenceNumber
+      })),
+      importItems: editImportItems.map(item => ({
         ...item,
         licenceId: editingLicence.id,
         licenceNumber: editLicenceNumber
@@ -856,6 +994,18 @@ export const LicencesPage: React.FC = () => {
                           📄 {lic.originalFilename}
                         </div>
                       )}
+                      <div className="flex items-center gap-1.5 mt-1 font-sans">
+                        {lic.exportItems && lic.exportItems.length > 0 && (
+                          <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded font-medium">
+                            {lic.exportItems.length} Exp Item{lic.exportItems.length === 1 ? '' : 's'}
+                          </span>
+                        )}
+                        {lic.importItems && lic.importItems.length > 0 && (
+                          <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded font-medium">
+                            {lic.importItems.length} Imp Item{lic.importItems.length === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3.5 px-4 font-mono text-slate-700">₹ {lic.importLicenceValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</td>
                     <td className="py-3.5 px-4 font-mono text-slate-700">₹ {lic.exportObligationValue?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</td>
@@ -1170,6 +1320,141 @@ export const LicencesPage: React.FC = () => {
                 ) : (
                   <div className="bg-slate-50 border border-dashed border-slate-200 rounded-lg p-5 text-center text-slate-500">
                     <p className="text-xs">No Export Items recorded or extracted for this licence.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Section E.2: Import Items Schedule (Duty Free Imports) */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
+                    <h4 className="font-semibold text-slate-900 text-sm">
+                      Import Items Schedule (Details of items sought to be imported duty free under the Authorisation)
+                    </h4>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {selectedLicence.importItems?.some(i => i.needsVerification) && (
+                      <span className="text-[11px] bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full font-medium border border-amber-200 flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3 text-amber-600" />
+                        Needs Verification
+                      </span>
+                    )}
+                    <span className="text-xs bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full font-medium border border-emerald-100">
+                      {selectedLicence.importItems?.length || 0} Item{selectedLicence.importItems?.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                </div>
+
+                {selectedLicence.importItems && selectedLicence.importItems.length > 0 ? (
+                  <div className="overflow-x-auto border border-slate-200 rounded-lg bg-white">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-[10px] tracking-wider">
+                          <th className="py-2.5 px-3">Input Sr No</th>
+                          <th className="py-2.5 px-3">SION Sr No</th>
+                          <th className="py-2.5 px-3">Export Sr No</th>
+                          <th className="py-2.5 px-3">ITC HS Code</th>
+                          <th className="py-2.5 px-3 min-w-[200px]">Input Description</th>
+                          <th className="py-2.5 px-3 min-w-[180px]">Technical Features</th>
+                          <th className="py-2.5 px-3 text-right">Quantity</th>
+                          <th className="py-2.5 px-3 text-center">UOM</th>
+                          <th className="py-2.5 px-3 text-right">CIF Value (INR)</th>
+                          <th className="py-2.5 px-3 text-right">CIF Value ({selectedLicence.importCurrency || selectedLicence.exportForeignCurrency || 'FC'})</th>
+                          <th className="py-2.5 px-3 text-right">Duty Saved (₹)</th>
+                          <th className="py-2.5 px-3 text-right">Duty Saved %</th>
+                          <th className="py-2.5 px-3 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {selectedLicence.importItems.map((item, idx) => (
+                          <tr key={item.id || idx} className="hover:bg-slate-50/75 transition-colors">
+                            <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{item.inputSrNo || idx + 1}</td>
+                            <td className="py-2.5 px-3 font-mono text-slate-700">{item.sionSrNo || '—'}</td>
+                            <td className="py-2.5 px-3 font-mono">
+                              <span className="bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded text-[11px] font-medium" title="Links to Export Item Serial Number">
+                                #{item.exportSrNo || '1'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 font-mono font-medium">
+                              {item.itcHsCode ? (
+                                <span className="bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded text-[11px] border border-slate-200">
+                                  {item.itcHsCode}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-800 font-medium leading-relaxed max-w-xs">{item.inputDescription || '—'}</td>
+                            <td className="py-2.5 px-3 text-slate-600 italic text-[11px] leading-relaxed max-w-xs">{item.technicalDescription || '—'}</td>
+                            <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                              {typeof item.quantity === 'number' && item.quantity > 0 
+                                ? item.quantity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) 
+                                : (item.quantity ? String(item.quantity) : '—')}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-mono text-slate-600 font-medium">{item.uom || '—'}</td>
+                            <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900">
+                              {typeof item.cifValueInr === 'number' && item.cifValueInr > 0
+                                ? `₹ ${item.cifValueInr.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+                                : (item.cifValueInr ? `₹ ${item.cifValueInr}` : '—')}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                              {typeof item.cifValueFc === 'number' && item.cifValueFc > 0
+                                ? `${item.cifValueFc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+                                : (item.cifValueFc ? String(item.cifValueFc) : '—')}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono font-semibold text-emerald-800">
+                              {typeof item.dutySavedInr === 'number' && item.dutySavedInr > 0
+                                ? `₹ ${item.dutySavedInr.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+                                : (item.dutySavedInr ? `₹ ${item.dutySavedInr}` : '—')}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                              {typeof item.dutySavedPercent === 'number' && item.dutySavedPercent > 0
+                                ? `${item.dutySavedPercent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
+                                : (item.dutySavedPercent ? `${item.dutySavedPercent}%` : '—')}
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              {item.needsVerification ? (
+                                <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap">
+                                  Flagged for verification
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap">
+                                  Extracted
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-slate-50/90 border-t border-slate-200 font-semibold text-slate-900">
+                          <td colSpan={6} className="py-2.5 px-3 text-right uppercase text-[10px] tracking-wider text-slate-500">
+                            Total ({selectedLicence.importItems.length} items):
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold">
+                            {selectedLicence.importItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                          </td>
+                          <td className="py-2.5 px-3 text-center text-slate-500 text-[10px]">
+                            {Array.from(new Set(selectedLicence.importItems.map(i => i.uom).filter(Boolean))).join(', ') || '—'}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
+                            ₹ {selectedLicence.importItems.reduce((sum, item) => sum + (Number(item.cifValueInr) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-800">
+                            {selectedLicence.importItems.reduce((sum, item) => sum + (Number(item.cifValueFc) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} {selectedLicence.importCurrency || selectedLicence.exportForeignCurrency || ''}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-800">
+                            ₹ {selectedLicence.importItems.reduce((sum, item) => sum + (Number(item.dutySavedInr) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                          </td>
+                          <td colSpan={2}></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 border border-dashed border-slate-200 rounded-lg p-5 text-center text-slate-500">
+                    <p className="text-xs">No Import Items recorded or extracted for this licence.</p>
                   </div>
                 )}
               </div>
@@ -1566,11 +1851,28 @@ export const LicencesPage: React.FC = () => {
                             <span className="bg-slate-900 text-white font-mono text-[10px] px-2 py-0.5 rounded font-bold">
                               Item #{item.exportSrNo || index + 1}
                             </span>
-                            {item.needsVerification && (
-                              <span className="bg-amber-100 text-amber-800 text-[10px] px-2 py-0.5 rounded font-medium border border-amber-200">
-                                Needs Verification
-                              </span>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleToggleEditExportItemVerification(index)}
+                              className={`text-[10px] px-2 py-0.5 rounded font-medium border flex items-center gap-1 transition-colors ${
+                                item.needsVerification
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                              title="Click to toggle verification status"
+                            >
+                              {item.needsVerification ? (
+                                <>
+                                  <AlertCircle className="w-3 h-3 text-amber-600" />
+                                  <span>Needs Verification</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                  <span>Verified</span>
+                                </>
+                              )}
+                            </button>
                           </div>
                           <button
                             type="button"
@@ -1681,6 +1983,231 @@ export const LicencesPage: React.FC = () => {
                       className="mt-2 inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 font-semibold"
                     >
                       <Plus className="w-3 h-3" /> Add First Export Item
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Import Items Schedule (Editable) */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+                  <div>
+                    <h4 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
+                      3.2 Import Items Schedule ({editImportItems.length} items)
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Details of items sought to be imported duty free under the Authorisation (Preserve verbatim)
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddEditImportItemRow}
+                    className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold rounded-md text-[11px] transition-colors flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Import Item
+                  </button>
+                </div>
+
+                {editImportItems.length > 0 ? (
+                  <div className="space-y-3">
+                    {editImportItems.map((item, index) => (
+                      <div key={item.id || index} className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="bg-emerald-800 text-white font-mono text-[10px] px-2 py-0.5 rounded font-bold">
+                              Input #{item.inputSrNo || index + 1}
+                            </span>
+                            <span className="bg-blue-50 text-blue-700 text-[10px] px-2 py-0.5 rounded font-medium border border-blue-200" title="Linked Export Obligation Item">
+                              Links to Export #{item.exportSrNo || '1'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleEditImportItemVerification(index)}
+                              className={`text-[10px] px-2 py-0.5 rounded font-medium border flex items-center gap-1 transition-colors ${
+                                item.needsVerification
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                              title="Click to toggle verification status"
+                            >
+                              {item.needsVerification ? (
+                                <>
+                                  <AlertCircle className="w-3 h-3 text-amber-600" />
+                                  <span>Needs Verification</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                  <span>Marked as Verified</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteEditImportItemRow(index)}
+                            className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 p-1 rounded transition-colors text-xs flex items-center gap-1"
+                            title="Remove Item"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Remove</span>
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Input Sr No</label>
+                            <input
+                              type="text"
+                              value={item.inputSrNo || ''}
+                              onChange={(e) => handleEditImportItemChange(index, 'inputSrNo', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                              placeholder="1"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Export Sr No (Link)</label>
+                            <input
+                              type="text"
+                              value={item.exportSrNo || ''}
+                              onChange={(e) => handleEditImportItemChange(index, 'exportSrNo', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-blue-200 rounded text-blue-900 font-mono text-xs font-semibold"
+                              placeholder="1"
+                              title="Export Item Serial Number linked to this import input"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">SION Sr No</label>
+                            <input
+                              type="text"
+                              value={item.sionSrNo || ''}
+                              onChange={(e) => handleEditImportItemChange(index, 'sionSrNo', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                              placeholder="e.g. 62/2023"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">ITC HS Code</label>
+                            <input
+                              type="text"
+                              value={item.itcHsCode || ''}
+                              onChange={(e) => handleEditImportItemChange(index, 'itcHsCode', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                              placeholder="8-digit HS Code"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">UOM</label>
+                            <input
+                              type="text"
+                              value={item.uom || ''}
+                              onChange={(e) => handleEditImportItemChange(index, 'uom', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs uppercase"
+                              placeholder="KGS, MTR, NOS"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Input Description (Verbatim from DGFT)</label>
+                          <textarea
+                            rows={2}
+                            value={item.inputDescription || ''}
+                            onChange={(e) => handleEditImportItemChange(index, 'inputDescription', e.target.value)}
+                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 text-xs font-medium resize-none leading-relaxed"
+                            placeholder="Exact input description verbatim as printed on DGFT document"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Technical Features / Description (Verbatim)</label>
+                          <textarea
+                            rows={1}
+                            value={item.technicalDescription || ''}
+                            onChange={(e) => handleEditImportItemChange(index, 'technicalDescription', e.target.value)}
+                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 text-xs resize-none"
+                            placeholder="Technical features, yarn count, blend, spec verbatim as printed"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Quantity to Import</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.quantity}
+                              onChange={(e) => handleEditImportItemChange(index, 'quantity', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs font-semibold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">CIF Value (INR)</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.cifValueInr}
+                              onChange={(e) => handleEditImportItemChange(index, 'cifValueInr', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">CIF Value in FC ({editImportCurrency || editExportForeignCurrency || 'USD'})</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.cifValueFc}
+                              onChange={(e) => handleEditImportItemChange(index, 'cifValueFc', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Duty Saved (INR)</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.dutySavedInr}
+                              onChange={(e) => handleEditImportItemChange(index, 'dutySavedInr', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs text-emerald-800 font-semibold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Duty Saved (%)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={item.dutySavedPercent}
+                              onChange={(e) => handleEditImportItemChange(index, 'dutySavedPercent', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                            />
+                          </div>
+                        </div>
+
+                        {item.needsVerification && (
+                          <div>
+                            <label className="block text-[10px] font-semibold text-amber-800 uppercase mb-0.5">Verification Notes</label>
+                            <input
+                              type="text"
+                              value={item.verificationNotes || ''}
+                              onChange={(e) => handleEditImportItemChange(index, 'verificationNotes', e.target.value)}
+                              className="w-full px-2 py-1 bg-amber-50/50 border border-amber-200 rounded text-amber-900 text-xs"
+                              placeholder="Notes on why this item requires manual check"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 border border-dashed border-slate-200 rounded-lg p-4 text-center text-slate-500 text-xs">
+                    <p>No Import Items attached to this licence record.</p>
+                    <button
+                      type="button"
+                      onClick={handleAddEditImportItemRow}
+                      className="mt-2 inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-700 font-semibold"
+                    >
+                      <Plus className="w-3 h-3" /> Add First Import Item
                     </button>
                   </div>
                 )}
@@ -2140,15 +2667,28 @@ export const LicencesPage: React.FC = () => {
                             <span className="bg-slate-900 text-white font-mono text-[10px] px-2 py-0.5 rounded font-bold">
                               Item #{item.exportSrNo || index + 1}
                             </span>
-                            {item.needsVerification ? (
-                              <span className="bg-amber-100 text-amber-800 text-[10px] px-2 py-0.5 rounded font-medium border border-amber-200">
-                                Incomplete / Flagged for Verification
-                              </span>
-                            ) : (
-                              <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded font-medium border border-emerald-200">
-                                Verified
-                              </span>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleToggleExportItemVerification(index)}
+                              className={`text-[10px] px-2 py-0.5 rounded font-medium border flex items-center gap-1 transition-colors ${
+                                item.needsVerification
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                              title="Click to toggle verification status"
+                            >
+                              {item.needsVerification ? (
+                                <>
+                                  <AlertCircle className="w-3 h-3 text-amber-600" />
+                                  <span>Needs Verification</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                  <span>Marked as Verified</span>
+                                </>
+                              )}
+                            </button>
                           </div>
                           <button
                             type="button"
@@ -2264,6 +2804,231 @@ export const LicencesPage: React.FC = () => {
                 )}
               </div>
 
+              {/* Section 3.2: Import Items Schedule (Editable) */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+                  <div>
+                    <h4 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
+                      3.2 Import Items Schedule ({importItems.length} items)
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Details of items sought to be imported duty free under the Authorisation (Preserve verbatim)
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddImportItemRow}
+                    className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold rounded-md text-[11px] transition-colors flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Import Item Row
+                  </button>
+                </div>
+
+                {importItems.length > 0 ? (
+                  <div className="space-y-3">
+                    {importItems.map((item, index) => (
+                      <div key={item.id || index} className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="bg-emerald-800 text-white font-mono text-[10px] px-2 py-0.5 rounded font-bold">
+                              Input #{item.inputSrNo || index + 1}
+                            </span>
+                            <span className="bg-blue-50 text-blue-700 text-[10px] px-2 py-0.5 rounded font-medium border border-blue-200" title="Linked Export Obligation Item">
+                              Links to Export #{item.exportSrNo || '1'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleImportItemVerification(index)}
+                              className={`text-[10px] px-2 py-0.5 rounded font-medium border flex items-center gap-1 transition-colors ${
+                                item.needsVerification
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                              title="Click to toggle verification status"
+                            >
+                              {item.needsVerification ? (
+                                <>
+                                  <AlertCircle className="w-3 h-3 text-amber-600" />
+                                  <span>Needs Verification</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-600" />
+                                  <span>Marked as Verified</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteImportItemRow(index)}
+                            className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 p-1 rounded transition-colors text-xs flex items-center gap-1"
+                            title="Remove Item"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Remove</span>
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Input Sr No</label>
+                            <input
+                              type="text"
+                              value={item.inputSrNo || ''}
+                              onChange={(e) => handleImportItemChange(index, 'inputSrNo', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                              placeholder="1"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Export Sr No (Link)</label>
+                            <input
+                              type="text"
+                              value={item.exportSrNo || ''}
+                              onChange={(e) => handleImportItemChange(index, 'exportSrNo', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-blue-200 rounded text-blue-900 font-mono text-xs font-semibold"
+                              placeholder="1"
+                              title="Export Item Serial Number linked to this import input"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">SION Sr No</label>
+                            <input
+                              type="text"
+                              value={item.sionSrNo || ''}
+                              onChange={(e) => handleImportItemChange(index, 'sionSrNo', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                              placeholder="e.g. 62/2023"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">ITC HS Code</label>
+                            <input
+                              type="text"
+                              value={item.itcHsCode || ''}
+                              onChange={(e) => handleImportItemChange(index, 'itcHsCode', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                              placeholder="8-digit HS Code"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">UOM</label>
+                            <input
+                              type="text"
+                              value={item.uom || ''}
+                              onChange={(e) => handleImportItemChange(index, 'uom', e.target.value)}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs uppercase"
+                              placeholder="KGS, MTR, NOS"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Input Description (Verbatim from DGFT)</label>
+                          <textarea
+                            rows={2}
+                            value={item.inputDescription || ''}
+                            onChange={(e) => handleImportItemChange(index, 'inputDescription', e.target.value)}
+                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 text-xs font-medium resize-none leading-relaxed"
+                            placeholder="Exact input description verbatim as printed on DGFT document"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Technical Features / Description (Verbatim)</label>
+                          <textarea
+                            rows={1}
+                            value={item.technicalDescription || ''}
+                            onChange={(e) => handleImportItemChange(index, 'technicalDescription', e.target.value)}
+                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 text-xs resize-none"
+                            placeholder="Technical features, yarn count, blend, spec verbatim as printed"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Quantity to Import</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.quantity}
+                              onChange={(e) => handleImportItemChange(index, 'quantity', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs font-semibold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">CIF Value (INR)</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.cifValueInr}
+                              onChange={(e) => handleImportItemChange(index, 'cifValueInr', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">CIF Value in FC ({importCurrency || exportForeignCurrency || 'USD'})</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.cifValueFc}
+                              onChange={(e) => handleImportItemChange(index, 'cifValueFc', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Duty Saved (INR)</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={item.dutySavedInr}
+                              onChange={(e) => handleImportItemChange(index, 'dutySavedInr', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs text-emerald-800 font-semibold"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 uppercase mb-0.5">Duty Saved (%)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={item.dutySavedPercent}
+                              onChange={(e) => handleImportItemChange(index, 'dutySavedPercent', Number(e.target.value))}
+                              className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded text-slate-900 font-mono text-xs"
+                            />
+                          </div>
+                        </div>
+
+                        {item.needsVerification && (
+                          <div>
+                            <label className="block text-[10px] font-semibold text-amber-800 uppercase mb-0.5">Verification Notes</label>
+                            <input
+                              type="text"
+                              value={item.verificationNotes || ''}
+                              onChange={(e) => handleImportItemChange(index, 'verificationNotes', e.target.value)}
+                              className="w-full px-2 py-1 bg-amber-50/50 border border-amber-200 rounded text-amber-900 text-xs"
+                              placeholder="Notes on why this item requires manual check"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 border border-dashed border-slate-200 rounded-lg p-4 text-center text-slate-500 text-xs">
+                    <p>No Import Items extracted yet. Click "Extract Data from PDF" or add manually.</p>
+                    <button
+                      type="button"
+                      onClick={handleAddImportItemRow}
+                      className="mt-2 inline-flex items-center gap-1 text-emerald-600 hover:text-emerald-700 font-semibold"
+                    >
+                      <Plus className="w-3 h-3" /> Add Import Item Row
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {/* Section 4: Licence Status */}
               <div className="space-y-3 pt-2">
                 <h4 className="font-semibold text-slate-900 text-sm border-b border-slate-100 pb-1 flex items-center gap-1.5">
@@ -2348,6 +3113,12 @@ export const LicencesPage: React.FC = () => {
                   <div className="flex justify-between border-t border-slate-200/80 pt-1.5">
                     <span className="text-slate-500 font-medium">Export Schedule:</span>
                     <span className="font-medium text-blue-600">{deletingLicence.exportItems.length} Export Item{deletingLicence.exportItems.length === 1 ? '' : 's'}</span>
+                  </div>
+                )}
+                {deletingLicence.importItems && deletingLicence.importItems.length > 0 && (
+                  <div className="flex justify-between border-t border-slate-200/80 pt-1.5">
+                    <span className="text-slate-500 font-medium">Import Schedule:</span>
+                    <span className="font-medium text-emerald-600">{deletingLicence.importItems.length} Import Item{deletingLicence.importItems.length === 1 ? '' : 's'}</span>
                   </div>
                 )}
               </div>

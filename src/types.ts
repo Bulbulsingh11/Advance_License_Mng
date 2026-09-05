@@ -15,6 +15,29 @@ export interface ExportItem {
   verificationNotes?: string;        // Optional notes on what needs verification
 }
 
+export interface ImportItem {
+  id: string;
+  licenceId?: string;                 // Association with AdvanceLicence ID
+  licenceNumber?: string;             // Associated Licence Number
+  inputSrNo: string;                  // 7. Input Serial Number (e.g., "1", "2")
+  inputDescription: string;           // 1. Input Description (100% verbatim DGFT)
+  technicalDescription: string;       // 2. Technical Features / Description (100% verbatim DGFT)
+  sionSrNo: string;                   // 3. SION Serial Number (e.g., "62/2023", "1", "H-12")
+  exportSrNo: string;                 // 4. Export Serial Number (links import input to corresponding export item)
+  itcHsCode: string;                  // 5. ITC HS Code (e.g., "52010015", "29051100")
+  quantity: number;                   // 6. Quantity to be Imported (exact decimal)
+  uom: string;                        // 8. Unit of Measurement (e.g., "KGS", "MTR", "MT", "NOS")
+  cifValueInr: number;                // 9. CIF Value in INR (exact decimal)
+  cifValueFc: number;                 // 10. CIF Value in Foreign Currency (exact decimal)
+  currency?: string;                  // Currency (e.g., "USD")
+  dutySavedInr: number;               // 11. Duty Saved in INR (exact decimal)
+  dutySavedPercent: number;           // 12. Duty Saved Percentage (exact decimal)
+  needsVerification?: boolean;        // Flagged if field is missing or ambiguous
+  verificationNotes?: string;         // Optional notes on what needs verification
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface AdvanceLicence {
   id: string;
   fileNumber: string;                 // 1. Internal File Number
@@ -49,8 +72,9 @@ export interface AdvanceLicence {
   exportObligationPeriod: string;     // Export Obligation Period
   licenceStatus: 'Active' | 'Expired' | 'Closed' | 'Cancelled' | 'Pending Closure' | 'Nearly Expired';
   
-  // Associated Export Items extracted from DGFT Document
+  // Associated Export & Import Items extracted from DGFT Document
   exportItems?: ExportItem[];
+  importItems?: ImportItem[];
 
   originalDocument: {
     name: string;                     // Original PDF Filename
@@ -633,6 +657,253 @@ export interface MaterialsSummaryMetrics {
   consumablesCount: number;
   catalystsCount: number;
 }
+
+// ============================================================================
+// LICENCE FINDER & RECOMMENDATION ENGINE TYPES
+// ============================================================================
+
+export type LicenceFinderSearchType = 'import' | 'export';
+
+export interface LicenceScoreBreakdown {
+  sionCompatibility: number;      // 0 - 25 points
+  expiryRisk: number;             // 0 - 35 points
+  remainingQuota: number;         // 0 - 20 points
+  dutySavings: number;            // 0 - 15 points
+  targetDateBonus?: number;       // Optional buffer bonus points
+}
+
+export interface SionNormSummaryDetail {
+  sionCode: string;
+  rawMaterial: string;
+  rawMaterialHsCode?: string;
+  finishedGood?: string;
+  finishedGoodHsCode?: string;
+  yieldRatio: number;
+  wastagePercent: number;
+  dgftGazetteRef?: string;
+}
+
+export interface LicenceRecommendationDetails {
+  status: 'Active' | 'Expired' | 'Nearly Expired' | 'Closed' | 'Pending Closure';
+  daysToExpiry: number;
+  expiryDate: string;
+  licenceDate?: string;
+  licensingAuthority?: string;
+  totalFobInr: number;
+  totalFobFc: number;
+  remainingFobInr: number;
+  remainingFobFc: number;
+  totalCifInr: number;
+  totalCifFc: number;
+  remainingCifInr?: number;
+  remainingCifFc?: number;
+  utilizationPercent: number;
+  estimatedDutySavingsInr: number;
+  estimatedDutySavingsFc: number;
+  importCurrency: string;
+  exportCurrency?: string;
+  exchangeRate: number;
+  sionNorms: SionNormSummaryDetail[];
+  warningFlags: string[];
+  recommendationReason: string;
+  compatibilityLevel: 'Perfect Match' | 'Partial Match' | 'No Match';
+  compatibilityReason: string;
+}
+
+export interface LicenceRecommendation {
+  rank: number;
+  licenceId: string;
+  licenceNumber: string;
+  fileNumber: string;
+  dgftFileNumber?: string;
+  score: number;
+  confidencePercent: number;
+  scoreBreakdown: LicenceScoreBreakdown;
+  details: LicenceRecommendationDetails;
+  warningFlags: string[];
+  recommendationReason: string;
+}
+
+export interface ProjectedCosts {
+  cifValueInr: number;
+  cifValueFc: number;
+  basicCustomsDutyRate: number;
+  igstRate: number;
+  importDutyWithoutInr: number;
+  importDutyWithInr: number;
+  dutySavingsInr: number;
+  savingsPercentage: number;
+}
+
+export interface LicenceFinderSummary {
+  bestLicence: {
+    id: string;
+    number: string;
+    fileNumber: string;
+    score: number;
+    reason: string;
+  } | null;
+  alternativeLicences: Array<{
+    id: string;
+    number: string;
+    fileNumber: string;
+    score: number;
+    reason: string;
+  }>;
+  overallAdvice: string;
+  projectedCosts: ProjectedCosts;
+  totalCandidatesEvaluated: number;
+  eligibleCount: number;
+}
+
+export interface LicenceFinderSearchQuery {
+  type: LicenceFinderSearchType;
+  materialId?: string;
+  materialName?: string;
+  productId?: string;
+  productName?: string;
+  hsCode?: string;
+  quantity: number;
+  uom: string;
+  targetDate: string;
+  unitPrice?: number;
+  currency?: string;
+  customsDutyRate?: number;
+  igstRate?: number;
+}
+
+export interface LicenceFinderSearchResult {
+  success: boolean;
+  source: string;
+  search: {
+    type: LicenceFinderSearchType;
+    material?: {
+      id?: string;
+      code?: string;
+      name: string;
+      hsCode: string;
+      uom?: string;
+      cifUnitPrice?: number;
+      currency?: string;
+    };
+    product?: {
+      id?: string;
+      code?: string;
+      name: string;
+      hsCode: string;
+      uom?: string;
+      standardFobPrice?: number;
+      currency?: string;
+    };
+    quantity: number;
+    uom: string;
+    targetDate: string;
+    estimatedValueInr?: number;
+    estimatedValueFc?: number;
+    currency?: string;
+  };
+  recommendations: LicenceRecommendation[];
+  summary: LicenceFinderSummary;
+}
+
+export interface BulkShipmentItem {
+  id: string;
+  type: LicenceFinderSearchType;
+  materialId?: string;
+  productId?: string;
+  materialName?: string;
+  productName?: string;
+  hsCode?: string;
+  quantity: number;
+  uom: string;
+  targetDate: string;
+  unitPrice?: number;
+  currency?: string;
+}
+
+export interface BulkShipmentRecommendation {
+  shipmentId: string;
+  shipmentName: string;
+  type: LicenceFinderSearchType;
+  quantity: number;
+  uom: string;
+  targetDate: string;
+  estimatedValueInr: number;
+  recommendedLicence: LicenceRecommendation | null;
+  alternativeLicences: LicenceRecommendation[];
+  conflictWarning?: string;
+}
+
+export interface BulkSearchResponse {
+  success: boolean;
+  source: string;
+  totalShipments: number;
+  results: BulkShipmentRecommendation[];
+  conflictAnalysis: {
+    hasConflicts: boolean;
+    conflictedLicences: Array<{
+      licenceNumber: string;
+      fileNumber: string;
+      remainingQuotaInr: number;
+      totalRequiredInr: number;
+      deficitInr: number;
+      competingShipments: string[];
+    }>;
+    optimizationStrategy: string;
+  };
+  totalProjectedDutySavingsInr: number;
+}
+
+export interface DutySavingsCalculation {
+  licenceId?: string;
+  licenceNumber?: string;
+  cifValueInr: number;
+  cifValueFc: number;
+  currency: string;
+  exchangeRate: number;
+  basicCustomsDutyPercent: number;
+  basicCustomsDutyAmountInr: number;
+  socialWelfareSurchargePercent: number;
+  socialWelfareSurchargeInr: number;
+  igstPercent: number;
+  igstAmountInr: number;
+  totalDutyWithoutLicenceInr: number;
+  totalDutyWithLicenceInr: number;
+  netDutySavingsInr: number;
+  effectiveSavingsPercent: number;
+}
+
+export interface CompatibilityStatus {
+  isCompatible: boolean;
+  compatibilityLevel: 'Perfect Match' | 'Partial Match' | 'No Match';
+  reason: string;
+  sionNorms: SionNorm[];
+  exportItems: ExportItem[];
+  yieldRatio?: number;
+  wastagePercent?: number;
+}
+
+export interface LicenceFinderHistoryItem {
+  id: string;
+  userId?: string;
+  searchQueryType: LicenceFinderSearchType;
+  searchMaterialId?: string;
+  searchMaterialName: string;
+  searchQuantity: number;
+  searchUom: string;
+  searchTargetDate: string;
+  recommendedLicenceIds: string[];
+  topRecommendationId?: string;
+  topRecommendationNumber?: string;
+  topRecommendationScore?: number;
+  dutySavingsInr?: number;
+  rankingCriteria?: any;
+  searchTimestamp: string;
+  userAccepted?: boolean;
+  finalLicenceUsedId?: string;
+  createdAt?: string;
+}
+
 
 
 

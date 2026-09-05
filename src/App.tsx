@@ -8,6 +8,7 @@ import { MaterialsPage } from './components/MaterialsPage';
 import { ImportTransactionsPage } from './components/ImportTransactionsPage';
 import { ExportsPage } from './components/ExportsPage';
 import { UtilizationPage } from './components/UtilizationPage';
+import { LicenceFinderPage } from './components/LicenceFinderPage';
 import { PlaceholderPage } from './components/PlaceholderPage';
 
 export default function App() {
@@ -38,6 +39,8 @@ export default function App() {
             <ExportsPage />
           ) : currentModule === 'utilization' ? (
             <UtilizationPage onNavigate={setCurrentModule} />
+          ) : currentModule === 'finder' ? (
+            <LicenceFinderPage onNavigate={setCurrentModule} />
           ) : (
             <PlaceholderPage moduleId={currentModule} onNavigate={setCurrentModule} />
           )}

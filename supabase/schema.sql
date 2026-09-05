@@ -109,6 +109,39 @@ CREATE TABLE IF NOT EXISTS licence_export_items (
 );
 
 -- ----------------------------------------------------------------------------
+-- TABLE 2B: licence_import_items (Import Items Schedule Child Table)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS licence_import_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    licence_id UUID NOT NULL REFERENCES licence_master(id) ON DELETE CASCADE,
+    
+    -- Schedule Item Details
+    input_sr_no TEXT,                                  -- Input Serial Number (e.g. "1", "2")
+    input_description TEXT NOT NULL,                   -- 100% Verbatim DGFT Input Description
+    technical_description TEXT,                        -- 100% Verbatim Technical Features / Description
+    sion_sr_no TEXT,                                   -- SION Serial Number (e.g. "62/2023", "H-12")
+    export_sr_no TEXT,                                 -- Export Serial Number (links import input to export item)
+    itc_hs_code TEXT,                                  -- ITC (HS) Code
+    
+    -- Quantities & Monetary Values with 4-Decimal Precision
+    quantity NUMERIC(18, 4) DEFAULT 0.0000 NOT NULL,
+    uom TEXT,                                          -- Unit of Measurement (e.g. "KGS", "MTR", "MT", "NOS")
+    cif_value_inr NUMERIC(18, 4) DEFAULT 0.0000 NOT NULL,
+    cif_value_fc NUMERIC(18, 4) DEFAULT 0.0000 NOT NULL,
+    currency TEXT DEFAULT 'USD',
+    duty_saved_inr NUMERIC(18, 4) DEFAULT 0.0000 NOT NULL,
+    duty_saved_percent NUMERIC(10, 4) DEFAULT 0.0000 NOT NULL,
+    
+    -- AI Verification Tracking
+    needs_verification BOOLEAN DEFAULT FALSE,
+    verification_notes TEXT,
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- ----------------------------------------------------------------------------
 -- INDEXES for Ultra-Fast Lookups & Foreign Key Joins
 -- ----------------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_licence_master_file_no ON licence_master (file_number);
@@ -119,6 +152,9 @@ CREATE INDEX IF NOT EXISTS idx_licence_master_created_at ON licence_master (crea
 
 CREATE INDEX IF NOT EXISTS idx_licence_export_items_licence_id ON licence_export_items (licence_id);
 CREATE INDEX IF NOT EXISTS idx_licence_export_items_itc_hs ON licence_export_items (itc_hs_code);
+CREATE INDEX IF NOT EXISTS idx_licence_import_items_licence_id ON licence_import_items (licence_id);
+CREATE INDEX IF NOT EXISTS idx_licence_import_items_itc_hs ON licence_import_items (itc_hs_code);
+CREATE INDEX IF NOT EXISTS idx_licence_import_items_export_sr_no ON licence_import_items (export_sr_no);
 
 -- ----------------------------------------------------------------------------
 -- AUTOMATIC updated_at TRIGGERS
@@ -135,11 +171,18 @@ CREATE TRIGGER trigger_licence_export_items_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS trigger_licence_import_items_updated_at ON licence_import_items;
+CREATE TRIGGER trigger_licence_import_items_updated_at
+    BEFORE UPDATE ON licence_import_items
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 -- ----------------------------------------------------------------------------
 -- ROW LEVEL SECURITY (RLS) & POLICIES
 -- ----------------------------------------------------------------------------
 ALTER TABLE licence_master ENABLE ROW LEVEL SECURITY;
 ALTER TABLE licence_export_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE licence_import_items ENABLE ROW LEVEL SECURITY;
 
 -- Permissive policies for authenticated, service_role, and anon
 DROP POLICY IF EXISTS "Allow full access to licence_master" ON licence_master;
@@ -152,6 +195,13 @@ CREATE POLICY "Allow full access to licence_master"
 DROP POLICY IF EXISTS "Allow full access to licence_export_items" ON licence_export_items;
 CREATE POLICY "Allow full access to licence_export_items"
     ON licence_export_items
+    FOR ALL
+    USING (true)
+    WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to licence_import_items" ON licence_import_items;
+CREATE POLICY "Allow full access to licence_import_items"
+    ON licence_import_items
     FOR ALL
     USING (true)
     WITH CHECK (true);
@@ -765,6 +815,97 @@ CREATE POLICY "Allow full access to sion_norms" ON sion_norms FOR ALL USING (tru
 
 DROP POLICY IF EXISTS "Allow full access to material_specifications" ON material_specifications;
 CREATE POLICY "Allow full access to material_specifications" ON material_specifications FOR ALL USING (true) WITH CHECK (true);
+
+-- ============================================================================
+-- PHASE 5: LICENCE FINDER & INTELLIGENT RECOMMENDATION ENGINE TABLES
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 1. LICENCE RECOMMENDATIONS (Audit Trail of Search Queries & Optimal Matches)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS licence_recommendations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT DEFAULT 'current_user',
+    search_query_type TEXT NOT NULL CHECK (search_query_type IN ('import', 'export')),
+    
+    -- Material / Finished Good Search References
+    search_material_id UUID,
+    search_material_name TEXT NOT NULL,
+    search_quantity NUMERIC(18, 4) NOT NULL,
+    search_uom TEXT NOT NULL,
+    search_target_date DATE,
+    
+    -- Recommendation Outputs & Scoring Details
+    recommended_licence_ids TEXT[] DEFAULT '{}',
+    top_recommendation_id UUID REFERENCES licence_master(id) ON DELETE SET NULL,
+    ranking_criteria JSONB DEFAULT '{}'::jsonb,
+    search_timestamp TIMESTAMPTZ DEFAULT NOW(),
+    
+    -- User Action Tracking & Feedback Loop
+    user_accepted BOOLEAN DEFAULT FALSE,
+    final_licence_used_id UUID REFERENCES licence_master(id) ON DELETE SET NULL,
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for lightning-fast history lookup and analytics
+CREATE INDEX IF NOT EXISTS idx_licence_rec_user ON licence_recommendations (user_id);
+CREATE INDEX IF NOT EXISTS idx_licence_rec_timestamp ON licence_recommendations (search_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_licence_rec_top_lic ON licence_recommendations (top_recommendation_id);
+CREATE INDEX IF NOT EXISTS idx_licence_rec_type ON licence_recommendations (search_query_type);
+
+-- ----------------------------------------------------------------------------
+-- 2. LICENCE COMPATIBILITY SCORES (Fast Matching & Pre-computed Norm Cache)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS licence_compatibility_scores (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    licence_id UUID NOT NULL REFERENCES licence_master(id) ON DELETE CASCADE,
+    material_id UUID REFERENCES raw_materials(id) ON DELETE CASCADE,
+    finished_good_id UUID REFERENCES finished_goods(id) ON DELETE CASCADE,
+    
+    is_compatible BOOLEAN NOT NULL DEFAULT FALSE,
+    compatibility_level TEXT DEFAULT 'No Match', -- 'Perfect Match', 'Partial Match', 'No Match'
+    compatibility_reason TEXT,
+    last_verified_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for compatibility joins
+CREATE INDEX IF NOT EXISTS idx_lic_comp_licence ON licence_compatibility_scores (licence_id);
+CREATE INDEX IF NOT EXISTS idx_lic_comp_material ON licence_compatibility_scores (material_id);
+CREATE INDEX IF NOT EXISTS idx_lic_comp_fin_good ON licence_compatibility_scores (finished_good_id);
+
+-- ----------------------------------------------------------------------------
+-- AUTOMATIC updated_at TRIGGERS for Licence Finder Tables
+-- ----------------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trigger_licence_recommendations_updated_at ON licence_recommendations;
+CREATE TRIGGER trigger_licence_recommendations_updated_at
+    BEFORE UPDATE ON licence_recommendations
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS trigger_licence_comp_scores_updated_at ON licence_compatibility_scores;
+CREATE TRIGGER trigger_licence_comp_scores_updated_at
+    BEFORE UPDATE ON licence_compatibility_scores
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ----------------------------------------------------------------------------
+-- RLS POLICIES for Licence Finder Tables
+-- ----------------------------------------------------------------------------
+ALTER TABLE licence_recommendations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE licence_compatibility_scores ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow full access to licence_recommendations" ON licence_recommendations;
+CREATE POLICY "Allow full access to licence_recommendations" ON licence_recommendations FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to licence_compatibility_scores" ON licence_compatibility_scores;
+CREATE POLICY "Allow full access to licence_compatibility_scores" ON licence_compatibility_scores FOR ALL USING (true) WITH CHECK (true);
+
 
 
 

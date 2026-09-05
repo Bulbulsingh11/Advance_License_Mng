@@ -42,7 +42,11 @@ import {
   Percent,
   CheckCheck,
   ClipboardList,
+  Upload,
+  FileText,
 } from 'lucide-react';
+import { ImportPdfUploaderModal } from './ImportPdfUploaderModal';
+import { ImportExcelUploaderModal } from './ImportExcelUploaderModal';
 import {
   ImportDocument,
   ImportLineItem,
@@ -124,6 +128,8 @@ export const ImportTransactionsPage: React.FC = () => {
 
   // Modal States
   const [isNewDocModalOpen, setIsNewDocModalOpen] = useState(false);
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
   const [editingDoc, setEditingDoc] = useState<ImportDocument | null>(null);
   const [inspectingDoc, setInspectingDoc] = useState<ImportDocument | null>(null);
   const [grnModalDoc, setGrnModalDoc] = useState<ImportDocument | null>(null);
@@ -742,6 +748,26 @@ export const ImportTransactionsPage: React.FC = () => {
           >
             <Download className="w-4 h-4 text-slate-500" />
             <span>Export CSV</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsPdfModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold text-sky-800 bg-sky-50 border border-sky-200 rounded-lg hover:bg-sky-100 transition-colors shadow-xs"
+            title="Upload Bill of Entry PDF and extract items"
+          >
+            <FileText className="w-4 h-4 text-sky-600" />
+            <span>Upload Bill of Entry PDF</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsExcelModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors shadow-xs"
+            title="Upload Excel spreadsheet of actual import transactions"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            <span>Upload Excel</span>
           </button>
 
           <button
@@ -2183,6 +2209,28 @@ export const ImportTransactionsPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Bill of Entry PDF Uploader Modal */}
+      <ImportPdfUploaderModal
+        isOpen={isPdfModalOpen}
+        onClose={() => setIsPdfModalOpen(false)}
+        onImportSuccess={(createdDoc, msg) => {
+          setSuccessBanner(msg);
+          loadImportDocuments();
+          setTimeout(() => setSuccessBanner(''), 5000);
+        }}
+      />
+
+      {/* Actual Import Excel Spreadsheet Uploader Modal */}
+      <ImportExcelUploaderModal
+        isOpen={isExcelModalOpen}
+        onClose={() => setIsExcelModalOpen(false)}
+        onImportSuccess={(createdDocs, msg) => {
+          setSuccessBanner(msg);
+          loadImportDocuments();
+          setTimeout(() => setSuccessBanner(''), 5000);
+        }}
+      />
     </div>
   );
 };

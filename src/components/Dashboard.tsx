@@ -218,12 +218,37 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
               </div>
 
               <div 
-                onClick={() => onNavigate('utilization')}
+                onClick={() => onNavigate('finder')}
                 className="p-4 rounded-xl border border-blue-200 bg-blue-50/20 hover:border-blue-500/80 hover:bg-blue-50/60 transition-all cursor-pointer group"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-xs">
+                      LF
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <h4 className="text-sm font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
+                          Licence Finder & Recommender
+                        </h4>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded">
+                          SION Engine
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500">100-pt scoring for upcoming shipments, expiry runway & duty savings</p>
+                    </div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" />
+                </div>
+              </div>
+
+              <div 
+                onClick={() => onNavigate('utilization')}
+                className="p-4 rounded-xl border border-slate-200 hover:border-blue-500/50 hover:bg-blue-50/30 transition-all cursor-pointer group"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center font-semibold text-sm">
                       UT
                     </div>
                     <div>

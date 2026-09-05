@@ -943,6 +943,47 @@ export const createImportDocument = async (
 };
 
 /**
+ * Bulk create Import Documents from Excel / review table
+ */
+export const createImportDocumentsBulk = async (
+  docs: Partial<ImportDocument>[]
+): Promise<{ success: boolean; count: number; data: ImportDocument[]; message?: string }> => {
+  const res = await fetch('/api/import-documents/bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ documents: docs }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to bulk create Import Documents (HTTP ${res.status})`);
+  }
+
+  return await res.json();
+};
+
+/**
+ * Extract Bill of Entry PDF using server-side Gemini endpoint
+ */
+export const extractBoePdf = async (
+  pdfBase64: string,
+  fileName?: string
+): Promise<{ success: boolean; extracted: any; notice?: string; isHighDemandSpike?: boolean }> => {
+  const res = await fetch('/api/extract-boe-pdf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pdfBase64, fileName }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to extract Bill of Entry PDF (HTTP ${res.status})`);
+  }
+
+  return await res.json();
+};
+
+/**
  * Update an existing Bill of Entry and its line items
  */
 export const updateImportDocument = async (
