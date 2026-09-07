@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import {
   FileSpreadsheet,
@@ -15,9 +15,10 @@ import {
   Sparkles,
   Search,
   Filter,
+  ShieldCheck,
 } from 'lucide-react';
-import { ImportDocument, CurrencyCode } from '../types';
-import { createImportDocumentsBulk } from '../lib/supabase';
+import { ImportDocument, CurrencyCode, AdvanceLicence } from '../types';
+import { createImportDocumentsBulk, fetchLicencesFromDB } from '../lib/supabase';
 
 interface ImportExcelUploaderModalProps {
   isOpen: boolean;
@@ -50,6 +51,7 @@ export interface ParsedImportExcelRow {
   notes: string;
   isValid: boolean;
   warnings: string[];
+  licenceId?: string;
 }
 
 const VALID_CURRENCIES: CurrencyCode[] = ['USD', 'EUR', 'GBP', 'INR', 'AED', 'JPY', 'CAD', 'SGD'];
@@ -67,6 +69,26 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
   const [isSaving, setIsSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [licences, setLicences] = useState<AdvanceLicence[]>([]);
+  const [globalBatchLicenceId, setGlobalBatchLicenceId] = useState<string>('');
+  const [isLoadingLicences, setIsLoadingLicences] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setIsLoadingLicences(true);
+      fetchLicencesFromDB()
+        .then((res) => {
+          if (res && Array.isArray(res.licences)) {
+            setLicences(res.licences);
+            if (res.licences.length === 1 && !globalBatchLicenceId) {
+              setGlobalBatchLicenceId(res.licences[0].id);
+            }
+          }
+        })
+        .catch((err) => console.warn('Failed to fetch licences for excel modal:', err))
+        .finally(() => setIsLoadingLicences(false));
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -77,6 +99,20 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
     setIsSaving(false);
     setUploadError(null);
     setSearchFilter('');
+    setGlobalBatchLicenceId('');
+  };
+
+  const handleApplyGlobalLicenceToAllRows = () => {
+    if (!globalBatchLicenceId) {
+      alert('Please select an Advance Licence first from the batch dropdown.');
+      return;
+    }
+    setParsedRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        licenceId: globalBatchLicenceId,
+      }))
+    );
   };
 
   const handleClose = () => {
@@ -411,9 +447,20 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
     try {
       // Group rows by Bill of Entry number so that multiple items under same BoE are saved as a single document with multiple line items
       const docMap = new Map<string, any>();
+      const unassignedBoes: string[] = [];
 
       for (const row of parsedRows) {
         const key = row.importBillNumber.trim().toUpperCase();
+        const effectiveLicenceId = row.licenceId || globalBatchLicenceId || '';
+
+        if (!effectiveLicenceId) {
+          if (!unassignedBoes.includes(row.importBillNumber.trim())) {
+            unassignedBoes.push(row.importBillNumber.trim() || 'Unspecified BoE');
+          }
+        }
+
+        const selLicence = licences.find((l) => l.id === effectiveLicenceId);
+
         if (!docMap.has(key)) {
           docMap.set(key, {
             importBillNumber: row.importBillNumber.trim(),
@@ -430,9 +477,9 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
             boeStatus: row.boeStatus,
             customsClearanceDate: row.customsClearanceDate || null,
             notes: row.notes,
-            licenceId: '', // Strictly unassigned
-            licenceNumber: '',
-            companyFileNumber: '',
+            licenceId: effectiveLicenceId,
+            licenceNumber: selLicence?.licenceNumber || '',
+            companyFileNumber: selLicence?.fileNumber || '',
             lineItems: [],
             totalInvoiceValueFc: 0,
             totalInvoiceValueInr: 0,
@@ -453,6 +500,16 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
         });
         doc.totalInvoiceValueFc += row.totalLineValueFc;
         doc.totalInvoiceValueInr += row.totalLineValueInr;
+      }
+
+      if (unassignedBoes.length > 0) {
+        setIsSaving(false);
+        alert(
+          `Please assign an Advance Licence for the following Bill(s) of Entry before committing:\n\n` +
+            unassignedBoes.join(', ') +
+            `\n\nYou can select a Batch Advance Licence at the top and click "Apply Licence to All Rows", or select a licence per row.`
+        );
+        return;
       }
 
       const docsToCreate = Array.from(docMap.values());
@@ -607,8 +664,7 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
                     <span className="font-bold">Excel Import Review:</span> Review and edit mapped rows
                     before committing to the Inward Register.
                     <span className="block mt-0.5 text-amber-800">
-                      <strong>Advance Licence Assignment:</strong> Unassigned. Licences are not automatically
-                      assigned during upload. Matching and quota reconciliation occur in dedicated workflows.
+                      <strong>Advance Licence Requirement:</strong> An Advance Licence is required for all imported Bills of Entry to record duty-free raw material debit in PostgreSQL. Select a batch licence below or choose per-row.
                     </span>
                   </div>
                 </div>
@@ -621,6 +677,42 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
                 >
                   Upload Different File
                 </button>
+              </div>
+
+              {/* Batch Licence Selection Bar */}
+              <div className="p-3 bg-amber-50/90 border border-amber-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                  <div>
+                    <span className="text-xs font-bold text-amber-900 block">
+                      Batch Advance Licence Selection <span className="text-rose-600">*</span>
+                    </span>
+                    <span className="text-[11px] text-amber-800">
+                      Assign a single licence to all imported rows at once or override individually per row below
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 min-w-[320px]">
+                  <select
+                    value={globalBatchLicenceId}
+                    onChange={(e) => setGlobalBatchLicenceId(e.target.value)}
+                    className="flex-1 text-xs px-3 py-1.5 bg-white border border-amber-300 rounded-lg font-medium text-slate-800 focus:ring-2 focus:ring-sky-500 shadow-2xs"
+                  >
+                    <option value="">-- Select Batch Licence --</option>
+                    {licences.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.licenceNumber} (File #{l.fileNumber || 'N/A'})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleApplyGlobalLicenceToAllRows}
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-lg transition-colors whitespace-nowrap shadow-2xs"
+                  >
+                    Apply to All Rows
+                  </button>
+                </div>
               </div>
 
               {/* Stats Bar and Controls */}
@@ -667,6 +759,7 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
                       <tr>
                         <th className="py-2.5 px-3 w-8 text-center">#</th>
                         <th className="py-2.5 px-3 min-w-[120px]">BoE No *</th>
+                        <th className="py-2.5 px-3 min-w-[180px]">Advance Licence *</th>
                         <th className="py-2.5 px-3 min-w-[110px]">Filing Date</th>
                         <th className="py-2.5 px-3 min-w-[140px]">Foreign Supplier</th>
                         <th className="py-2.5 px-3 min-w-[110px]">ITC HS Code</th>
@@ -692,6 +785,24 @@ export const ImportExcelUploaderModal: React.FC<ImportExcelUploaderModalProps> =
                               onChange={(e) => handleUpdateRow(row.tempId, 'importBillNumber', e.target.value)}
                               className="w-full px-2 py-1 border border-slate-200 rounded text-xs font-mono font-medium focus:border-emerald-500 focus:bg-white bg-slate-50/50"
                             />
+                          </td>
+                          <td className="py-2 px-3">
+                            <select
+                              value={row.licenceId || globalBatchLicenceId || ''}
+                              onChange={(e) => handleUpdateRow(row.tempId, 'licenceId', e.target.value)}
+                              className={`w-full px-2 py-1 border rounded text-[11px] font-medium focus:border-emerald-500 focus:bg-white ${
+                                !(row.licenceId || globalBatchLicenceId)
+                                  ? 'border-rose-400 text-rose-800 bg-rose-50/40'
+                                  : 'border-slate-200 text-slate-800 bg-slate-50/50'
+                              }`}
+                            >
+                              <option value="">-- Select Licence --</option>
+                              {licences.map((l) => (
+                                <option key={l.id} value={l.id}>
+                                  {l.licenceNumber} ({l.fileNumber || 'N/A'})
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="py-2 px-3">
                             <input

@@ -58,6 +58,7 @@ import {
   fetchLicencesFromDB 
 } from '../lib/supabase';
 import { ExportExcelUploaderModal } from './ExportExcelUploaderModal';
+import { ExportPdfUploaderModal } from './ExportPdfUploaderModal';
 
 const CURRENCIES: CurrencyCode[] = ['USD', 'EUR', 'GBP', 'INR', 'AED', 'JPY', 'CAD', 'SGD'];
 
@@ -126,6 +127,7 @@ export const ExportsPage: React.FC = () => {
   const [isBrcModalOpen, setIsBrcModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
 
   // Active targets
   const [selectedBill, setSelectedBill] = useState<ShippingBill | null>(null);
@@ -850,6 +852,15 @@ export const ExportsPage: React.FC = () => {
           >
             <Download className={`w-4 h-4 text-slate-500 ${isExportingCsv ? 'animate-bounce' : ''}`} />
             {isExportingCsv ? 'Exporting...' : 'Export CSV'}
+          </button>
+
+          <button
+            onClick={() => setIsPdfModalOpen(true)}
+            className="flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors shadow-xs"
+            title="Upload Shipping Bill PDF (ICEGATE EDI)"
+          >
+            <Upload className="w-4 h-4 text-blue-600" />
+            Upload Shipping Bill PDF
           </button>
 
           <button
@@ -2480,6 +2491,19 @@ export const ExportsPage: React.FC = () => {
         onClose={() => setIsExcelModalOpen(false)}
         licences={licences}
         onImportSuccess={(importedCount, message) => {
+          setSuccessBanner(message);
+          fetchPaginatedData();
+          loadInitialOverview();
+          setTimeout(() => setSuccessBanner(''), 6000);
+        }}
+      />
+
+      {/* PDF SHIPPING BILL UPLOADER MODAL */}
+      <ExportPdfUploaderModal
+        isOpen={isPdfModalOpen}
+        onClose={() => setIsPdfModalOpen(false)}
+        licences={licences}
+        onImportSuccess={(message) => {
           setSuccessBanner(message);
           fetchPaginatedData();
           loadInitialOverview();

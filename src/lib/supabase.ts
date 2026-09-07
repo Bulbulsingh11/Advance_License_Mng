@@ -968,7 +968,15 @@ export const createImportDocumentsBulk = async (
 export const extractBoePdf = async (
   pdfBase64: string,
   fileName?: string
-): Promise<{ success: boolean; extracted: any; notice?: string; isHighDemandSpike?: boolean }> => {
+): Promise<{
+  success: boolean;
+  extracted: any;
+  notice?: string | null;
+  isHighDemandSpike?: boolean;
+  isLowConfidence?: boolean;
+  isFallback?: boolean;
+  rawGeminiResponse?: any;
+}> => {
   const res = await fetch('/api/extract-boe-pdf', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

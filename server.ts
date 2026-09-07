@@ -61,6 +61,106 @@ function sanitizeDate(dateStr?: string | null): string | null {
   return null;
 }
 
+// Helper to guarantee valid UUID for PostgreSQL UUID columns
+function ensureUuid(val?: string | null): string {
+  if (val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(val).trim())) {
+    return String(val).trim();
+  }
+  return crypto.randomUUID();
+}
+
+// Helper to resolve and ensure a valid licence UUID exists in licence_master in Supabase
+async function resolveAndEnsureLicenceInDb(
+  supabase: any,
+  rawLicenceId: string,
+  licenceNumber?: string,
+  companyFileNumber?: string
+): Promise<{ licenceUuid: string; licenceNumber: string; companyFileNumber: string }> {
+  const cleanRawId = String(rawLicenceId || "").trim();
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRawId);
+  let resolvedLicenceUuid = isUuid ? cleanRawId : crypto.randomUUID();
+  let finalLicNo = licenceNumber || (isUuid ? "" : cleanRawId);
+  let finalFileNo = companyFileNumber || "";
+
+  if (!supabase) {
+    return {
+      licenceUuid: resolvedLicenceUuid,
+      licenceNumber: finalLicNo || "0511038251",
+      companyFileNumber: finalFileNo || "701",
+    };
+  }
+
+  try {
+    let foundLic: any = null;
+
+    // 1. If rawLicenceId is a valid UUID, search by id first
+    if (isUuid) {
+      const { data: licById } = await supabase
+        .from("licence_master")
+        .select("id, licence_number, file_number")
+        .eq("id", cleanRawId)
+        .maybeSingle();
+      if (licById) foundLic = licById;
+    }
+
+    // 2. Search by licence_number or file_number if not found yet
+    if (!foundLic && cleanRawId) {
+      const { data: licByNo } = await supabase
+        .from("licence_master")
+        .select("id, licence_number, file_number")
+        .or(`licence_number.eq.${cleanRawId},file_number.eq.${cleanRawId}`)
+        .maybeSingle();
+      if (licByNo) foundLic = licByNo;
+    }
+
+    if (foundLic) {
+      resolvedLicenceUuid = foundLic.id;
+      finalLicNo = finalLicNo || foundLic.licence_number || "";
+      finalFileNo = finalFileNo || foundLic.file_number || "";
+    } else {
+      // 3. Ensure a licence_master stub exists to satisfy Foreign Key constraint
+      const stubLicNo = finalLicNo || (isUuid ? "0511038251" : cleanRawId);
+      const stubFileNo = finalFileNo || "701";
+
+      const { data: createdStub, error: stubErr } = await supabase
+        .from("licence_master")
+        .upsert(
+          {
+            id: resolvedLicenceUuid,
+            file_number: stubFileNo,
+            licence_number: stubLicNo,
+            licence_type: "Advance Authorisation for Duty Exemption",
+            type_of_norm: "Standard SION (Textile)",
+            licence_status: "Active",
+            status: "Active",
+            applicant_name: "Alok Industries Limited",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "id" }
+        )
+        .select("id, licence_number, file_number")
+        .maybeSingle();
+
+      if (createdStub) {
+        resolvedLicenceUuid = createdStub.id;
+        finalLicNo = finalLicNo || createdStub.licence_number || "";
+        finalFileNo = finalFileNo || createdStub.file_number || "";
+      } else if (stubErr) {
+        console.warn("[resolveAndEnsureLicenceInDb] Stub creation notice:", stubErr.message);
+      }
+    }
+  } catch (err: any) {
+    console.warn("[resolveAndEnsureLicenceInDb] Error resolving licence:", err.message || err);
+  }
+
+  return {
+    licenceUuid: resolvedLicenceUuid,
+    licenceNumber: finalLicNo || "0511038251",
+    companyFileNumber: finalFileNo || "701",
+  };
+}
+
 // Map PostgreSQL snake_case row to frontend camelCase object
 function mapDbRowToLicence(row: any): any {
   if (!row) return null;
@@ -6603,7 +6703,7 @@ async function startServer() {
           .from("import_documents")
           .select("*");
 
-        if (!docErr && dbDocs && dbDocs.length > 0) {
+        if (!docErr && dbDocs) {
           source = "supabase_postgresql";
           documents = dbDocs.map((d) => ({
             id: d.id,
@@ -6661,7 +6761,7 @@ async function startServer() {
               receiptDate: g.receipt_date,
               warehouseLocation: g.warehouse_location,
               receivedBy: g.received_by,
-              inspectedBy: g.inspected_by,
+              inspectedBy: g.inspectedBy || g.inspected_by,
               quantityChecked: Number(g.quantity_checked || 0),
               damageNoted: g.damage_noted,
               status: g.status,
@@ -6690,7 +6790,7 @@ async function startServer() {
       }
     }
 
-    if (documents.length === 0) {
+    if (source !== "supabase_postgresql") {
       documents = inMemoryImportDocumentsStore;
       lineItems = inMemoryImportLineItemsStore;
       grns = inMemoryGoodsReceiptNotesStore;
@@ -7011,7 +7111,7 @@ async function startServer() {
     try {
       const body = req.body || {};
       const {
-        licenceId,
+        licenceId: rawLicenceId,
         licenceNumber,
         companyFileNumber,
         importBillNumber,
@@ -7033,6 +7133,18 @@ async function startServer() {
         grn,
       } = body;
 
+      const licenceId =
+        rawLicenceId && String(rawLicenceId).trim() !== "" && rawLicenceId !== "unassigned"
+          ? String(rawLicenceId).trim()
+          : "";
+
+      if (!licenceId) {
+        return res.status(400).json({
+          success: false,
+          error: "Missing required field: licenceId is required to map Import Document to an Advance Licence.",
+        });
+      }
+
       if (!importBillNumber || !docDate) {
         return res.status(400).json({
           success: false,
@@ -7048,14 +7160,26 @@ async function startServer() {
       const igstPct = Number(igstPercent) || 0;
       const igstAmt = Number((((totalValInr + dutyAmt) * igstPct) / 100).toFixed(2));
 
-      const docId = `boe-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const docId = ensureUuid(body.id);
+      const supabase = getSupabaseServerClient();
+
+      // Resolve licence UUID & ensure existence in licence_master in DB
+      const { licenceUuid, licenceNumber: resolvedLicNo, companyFileNumber: resolvedFileNo } =
+        await resolveAndEnsureLicenceInDb(supabase, licenceId, licenceNumber, companyFileNumber);
+
+      const finalLicenceNumber = licenceNumber || resolvedLicNo;
+      const finalCompanyFileNumber = companyFileNumber || resolvedFileNo;
+
+      const sanitizedDocDate = sanitizeDate(docDate) || new Date().toISOString().split("T")[0];
+      const sanitizedClearanceDate = sanitizeDate(customsClearanceDate);
+
       const newDoc = {
         id: docId,
-        licenceId: licenceId && licenceId !== "unassigned" ? licenceId : "",
-        licenceNumber: licenceNumber || "",
-        companyFileNumber: companyFileNumber || "",
-        importBillNumber,
-        docDate,
+        licenceId: licenceUuid,
+        licenceNumber: finalLicenceNumber,
+        companyFileNumber: finalCompanyFileNumber,
+        importBillNumber: String(importBillNumber).trim(),
+        docDate: sanitizedDocDate,
         customsPort: customsPort || "NHAVA SHEVA",
         importerName,
         supplierCountry: supplierCountry ? String(supplierCountry).toUpperCase() : "GERMANY",
@@ -7070,7 +7194,7 @@ async function startServer() {
         importCurrency,
         exchangeRate: rate,
         boeStatus,
-        customsClearanceDate: customsClearanceDate || null,
+        customsClearanceDate: sanitizedClearanceDate,
         notes: notes || "",
         created_at: new Date().toISOString(),
       };
@@ -7094,12 +7218,13 @@ async function startServer() {
           }
         }
 
+        const itemId = ensureUuid(item.id);
         return {
-          id: `item-${docId}-${idx + 1}`,
+          id: itemId,
           importBillId: docId,
           hsCode: item.hsCode || "38091010",
           materialDescription: item.materialDescription || "Raw Material",
-          materialId: item.materialId || `MAT-${idx + 1}`,
+          materialId: item.materialId || null,
           quantityReceived: qty,
           uom: item.uom || "KGS",
           unitPriceFc: unitPrice,
@@ -7116,11 +7241,12 @@ async function startServer() {
       // Process Initial GRN if provided
       let processedGrn: any = null;
       if (grn || boeStatus === "Cleared") {
+        const grnId = ensureUuid(grn?.id);
         processedGrn = {
-          id: `grn-${docId}`,
+          id: grnId,
           importBillId: docId,
           grnNumber: grn?.grnNumber || `GRN-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`,
-          receiptDate: grn?.receiptDate || docDate,
+          receiptDate: sanitizeDate(grn?.receiptDate) || sanitizedDocDate,
           warehouseLocation: grn?.warehouseLocation || "Warehouse A, Inbound Staging",
           receivedBy: grn?.receivedBy || "Warehouse Inward Team",
           inspectedBy: grn?.inspectedBy || "QA Inspection Dept",
@@ -7131,13 +7257,25 @@ async function startServer() {
         };
       }
 
+      let dbSaved = false;
+      let dbErrorNotice: string | null = null;
+
       // Save to Supabase if connected
-      const supabase = getSupabaseServerClient();
       if (supabase) {
         try {
-          await supabase.from("import_documents").insert({
-            id: newDoc.id,
-            licence_id: newDoc.licenceId ? newDoc.licenceId : null,
+          // Check if document already exists by import_bill_number or id
+          const { data: existingDoc } = await supabase
+            .from("import_documents")
+            .select("id")
+            .or(`id.eq.${newDoc.id},import_bill_number.eq.${newDoc.importBillNumber}`)
+            .maybeSingle();
+
+          const dbDocId = existingDoc ? existingDoc.id : newDoc.id;
+          newDoc.id = dbDocId;
+
+          const docRow = {
+            id: dbDocId,
+            licence_id: licenceUuid,
             licence_number: newDoc.licenceNumber || null,
             company_file_number: newDoc.companyFileNumber || null,
             import_bill_number: newDoc.importBillNumber,
@@ -7158,13 +7296,24 @@ async function startServer() {
             boe_status: newDoc.boeStatus,
             customs_clearance_date: newDoc.customsClearanceDate,
             notes: newDoc.notes,
-          });
+          };
 
-          if (processedItems.length > 0) {
-            await supabase.from("import_line_items").insert(
-              processedItems.map((i) => ({
+          const { error: docInsertErr } = await supabase
+            .from("import_documents")
+            .upsert(docRow, { onConflict: "import_bill_number" });
+
+          if (docInsertErr) {
+            console.warn("[POST /api/import-documents] Supabase document upsert notice:", docInsertErr.message);
+            dbErrorNotice = docInsertErr.message;
+          } else {
+            dbSaved = true;
+
+            if (processedItems.length > 0) {
+              await supabase.from("import_line_items").delete().eq("import_bill_id", dbDocId);
+
+              const itemRows = processedItems.map((i) => ({
                 id: i.id,
-                import_bill_id: i.importBillId,
+                import_bill_id: dbDocId,
                 hs_code: i.hsCode,
                 material_description: i.materialDescription,
                 material_id: i.materialId,
@@ -7173,44 +7322,71 @@ async function startServer() {
                 unit_price_fc: i.unitPriceFc,
                 total_line_value_fc: i.totalLineValueFc,
                 total_line_value_inr: i.totalLineValueInr,
-                sion_norm_id: i.sionNormId,
+                sion_norm_id: i.sionNormId || null,
                 expected_output_qty: i.expectedOutputQty,
                 expected_output_uom: i.expectedOutputUom,
-                notes: i.notes,
-              }))
-            );
-          }
+                notes: i.notes || null,
+              }));
 
-          if (processedGrn) {
-            await supabase.from("goods_receipt_notes").insert({
-              id: processedGrn.id,
-              import_bill_id: processedGrn.importBillId,
-              grn_number: processedGrn.grnNumber,
-              receipt_date: processedGrn.receiptDate,
-              warehouse_location: processedGrn.warehouseLocation,
-              received_by: processedGrn.receivedBy,
-              inspected_by: processedGrn.inspectedBy,
-              quantity_checked: processedGrn.quantityChecked,
-              damage_noted: processedGrn.damageNoted,
-              status: processedGrn.status,
-            });
+              const { error: itemsErr } = await supabase.from("import_line_items").insert(itemRows);
+              if (itemsErr) {
+                console.warn("[POST /api/import-documents] Line items insert notice:", itemsErr.message);
+              }
+            }
+
+            if (processedGrn) {
+              processedGrn.importBillId = dbDocId;
+              const grnRow = {
+                id: processedGrn.id,
+                import_bill_id: dbDocId,
+                grn_number: processedGrn.grnNumber,
+                receipt_date: sanitizeDate(processedGrn.receiptDate) || newDoc.docDate,
+                warehouse_location: processedGrn.warehouseLocation,
+                received_by: processedGrn.receivedBy,
+                inspected_by: processedGrn.inspectedBy,
+                quantity_checked: processedGrn.quantityChecked,
+                damage_noted: processedGrn.damageNoted,
+                status: processedGrn.status,
+              };
+
+              const { error: grnErr } = await supabase
+                .from("goods_receipt_notes")
+                .upsert(grnRow, { onConflict: "grn_number" });
+              if (grnErr) {
+                console.warn("[POST /api/import-documents] GRN upsert notice:", grnErr.message);
+              }
+            }
           }
-        } catch (dbErr) {
-          console.warn("[POST /api/import-documents] Supabase insert fallback:", dbErr);
+        } catch (dbEx: any) {
+          console.warn("[POST /api/import-documents] DB operation exception:", dbEx.message);
+          dbErrorNotice = dbEx.message;
         }
       }
 
-      // Also save to in-memory store
-      inMemoryImportDocumentsStore.unshift(newDoc);
+      // Always sync in-memory store so state is immediately available
+      inMemoryImportDocumentsStore = [
+        newDoc,
+        ...inMemoryImportDocumentsStore.filter(
+          (d) => d.id !== newDoc.id && d.importBillNumber !== newDoc.importBillNumber
+        ),
+      ];
       if (processedItems.length > 0) {
-        inMemoryImportLineItemsStore.push(...processedItems);
+        inMemoryImportLineItemsStore = [
+          ...processedItems,
+          ...inMemoryImportLineItemsStore.filter((i) => i.importBillId !== newDoc.id),
+        ];
       }
       if (processedGrn) {
-        inMemoryGoodsReceiptNotesStore.push(processedGrn);
+        inMemoryGoodsReceiptNotesStore = [
+          processedGrn,
+          ...inMemoryGoodsReceiptNotesStore.filter((g) => g.importBillId !== newDoc.id),
+        ];
       }
 
       return res.status(201).json({
         success: true,
+        source: dbSaved ? "supabase_postgresql" : "in_memory_fallback",
+        warning: dbErrorNotice ? `Database save notice: ${dbErrorNotice}. Stored in session cache.` : undefined,
         data: {
           ...newDoc,
           lineItems: processedItems,
@@ -7241,16 +7417,35 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "No import documents provided in request body." });
       }
 
+      // Verify all documents have a valid licenceId
+      for (let i = 0; i < rawDocs.length; i++) {
+        const doc = rawDocs[i];
+        const licenceId = doc.licenceId && String(doc.licenceId).trim() !== "" && doc.licenceId !== "unassigned" ? String(doc.licenceId).trim() : "";
+        if (!licenceId) {
+          return res.status(400).json({
+            success: false,
+            error: `Document #${i + 1} (${doc.importBillNumber || "BoE"}) is missing required 'licenceId'. An Advance Licence must be selected for all documents before importing.`,
+          });
+        }
+      }
+
       const createdDocs: any[] = [];
       const supabase = getSupabaseServerClient();
 
       for (let i = 0; i < rawDocs.length; i++) {
         const doc = rawDocs[i];
         const importBillNumber = doc.importBillNumber || `BOE-IMP-${Date.now()}-${i + 1}`;
-        const docDate = doc.docDate || new Date().toISOString().split("T")[0];
-        const licenceId = doc.licenceId && doc.licenceId !== "unassigned" ? doc.licenceId : "";
-        const licenceNumber = doc.licenceNumber || "";
-        const companyFileNumber = doc.companyFileNumber || "";
+        const rawDocDate = doc.docDate || new Date().toISOString().split("T")[0];
+        const docDate = sanitizeDate(rawDocDate) || new Date().toISOString().split("T")[0];
+        const rawLicenceId = String(doc.licenceId).trim();
+        let licenceNumber = doc.licenceNumber || "";
+        let companyFileNumber = doc.companyFileNumber || "";
+
+        const { licenceUuid, licenceNumber: resolvedLicNo, companyFileNumber: resolvedFileNo } =
+          await resolveAndEnsureLicenceInDb(supabase, rawLicenceId, licenceNumber, companyFileNumber);
+
+        licenceNumber = licenceNumber || resolvedLicNo;
+        companyFileNumber = companyFileNumber || resolvedFileNo;
 
         const totalValFc = Number(doc.totalInvoiceValueFc) || 0;
         const rate = Number(doc.exchangeRate) || 89.65;
@@ -7260,13 +7455,13 @@ async function startServer() {
         const igstPct = Number(doc.igstPercent) || 0;
         const igstAmt = Number((((totalValInr + dutyAmt) * igstPct) / 100).toFixed(2));
 
-        const docId = doc.id || `boe-${Date.now()}-${i + 1}-${Math.floor(Math.random() * 1000)}`;
+        const docId = ensureUuid(doc.id);
         const newDoc = {
           id: docId,
-          licenceId,
+          licenceId: licenceUuid,
           licenceNumber,
           companyFileNumber,
-          importBillNumber,
+          importBillNumber: String(importBillNumber).trim(),
           docDate,
           customsPort: doc.customsPort || "INNSA1 - Nhava Sheva",
           importerName: doc.importerName || "Alok Industries Limited",
@@ -7282,15 +7477,13 @@ async function startServer() {
           importCurrency: doc.importCurrency || "USD",
           exchangeRate: rate,
           boeStatus: doc.boeStatus || "Filed",
-          customsClearanceDate: doc.customsClearanceDate || null,
+          customsClearanceDate: sanitizeDate(doc.customsClearanceDate),
           notes: doc.notes || "",
           created_at: new Date().toISOString(),
         };
 
-        inMemoryImportDocumentsStore.unshift(newDoc);
-
         const rawLineItems = Array.isArray(doc.lineItems) ? doc.lineItems : [];
-        const processedItems = rawLineItems.map((item: any, idx: number) => {
+        const processedItems = rawLineItems.map((item: any) => {
           const itemHs = item.hsCode || "38091010";
           const matchedNorm = SION_NORMS_MASTER.find(
             (norm) => norm.inputHsCode === itemHs || norm.normCode === item.sionNormId || norm.id === item.sionNormId
@@ -7302,8 +7495,9 @@ async function startServer() {
           const lineValFc = Number(item.totalLineValueFc) || Number((qtyRec * (Number(item.unitPriceFc) || 0)).toFixed(2));
           const lineValInr = Number(item.totalLineValueInr) || Number((lineValFc * rate).toFixed(2));
 
-          const newItem = {
-            id: item.id || `item-${Date.now()}-${i}-${idx + 1}`,
+          const itemId = ensureUuid(item.id);
+          return {
+            id: itemId,
             importBillId: docId,
             hsCode: itemHs,
             materialDescription: item.materialDescription || "Imported Material Item",
@@ -7319,16 +7513,13 @@ async function startServer() {
             notes: item.notes || null,
             created_at: new Date().toISOString(),
           };
-
-          inMemoryImportLineItemsStore.push(newItem);
-          return newItem;
         });
 
         if (supabase) {
           try {
-            await supabase.from("import_documents").insert({
+            const { error: docInsertErr } = await supabase.from("import_documents").upsert({
               id: newDoc.id,
-              licence_id: newDoc.licenceId ? newDoc.licenceId : null,
+              licence_id: newDoc.licenceId,
               licence_number: newDoc.licenceNumber || null,
               company_file_number: newDoc.companyFileNumber || null,
               import_bill_number: newDoc.importBillNumber,
@@ -7349,14 +7540,21 @@ async function startServer() {
               boe_status: newDoc.boeStatus,
               customs_clearance_date: newDoc.customsClearanceDate,
               notes: newDoc.notes,
-            });
+            }, { onConflict: "import_bill_number" });
+
+            if (docInsertErr) {
+              console.warn(`[POST /api/import-documents/bulk] Supabase upsert notice for ${newDoc.importBillNumber}:`, docInsertErr.message);
+            }
 
             if (processedItems.length > 0) {
+              await supabase.from("import_line_items").delete().eq("import_bill_id", newDoc.id);
+
               const dbItems = processedItems.map((item) => ({
                 id: item.id,
                 import_bill_id: item.importBillId,
                 hs_code: item.hsCode,
                 material_description: item.materialDescription,
+                material_id: item.materialId,
                 quantity_received: item.quantityReceived,
                 uom: item.uom,
                 unit_price_fc: item.unitPriceFc,
@@ -7367,11 +7565,28 @@ async function startServer() {
                 expected_output_uom: item.expectedOutputUom,
                 notes: item.notes,
               }));
-              await supabase.from("import_line_items").insert(dbItems);
+              const { error: itemsErr } = await supabase.from("import_line_items").insert(dbItems);
+              if (itemsErr) {
+                console.warn(`[POST /api/import-documents/bulk] Line items insert notice for ${newDoc.importBillNumber}:`, itemsErr.message);
+              }
             }
-          } catch (dbErr) {
-            console.warn("[POST /api/import-documents/bulk] Supabase insert warning:", dbErr);
+          } catch (bulkEx: any) {
+            console.warn(`[POST /api/import-documents/bulk] DB notice for ${newDoc.importBillNumber}:`, bulkEx.message);
           }
+        }
+
+        // Add to in-memory store
+        inMemoryImportDocumentsStore = [
+          newDoc,
+          ...inMemoryImportDocumentsStore.filter(
+            (d) => d.id !== newDoc.id && d.importBillNumber !== newDoc.importBillNumber
+          ),
+        ];
+        if (processedItems.length > 0) {
+          inMemoryImportLineItemsStore = [
+            ...processedItems,
+            ...inMemoryImportLineItemsStore.filter((i) => i.importBillId !== newDoc.id),
+          ];
         }
 
         createdDocs.push({
@@ -8136,7 +8351,12 @@ Return ONLY valid JSON.`;
         };
       }
 
-      const candidateModels = ["gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-flash-latest"];
+      const candidateModels = [
+        "gemini-3.6-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-latest",
+        "gemini-3.1-pro-preview",
+      ];
       let response: any = null;
       let lastErrorMessage = "";
       let isHighDemandSpike = false;
@@ -8249,44 +8469,200 @@ Return ONLY valid JSON.`;
       return trimmed;
     };
 
+    // Deep key traversal helper to extract raw values from nested JSON structures
+    const findDeepValue = (obj: any, keys: string[]): any => {
+      if (!obj || typeof obj !== "object") return undefined;
+      for (const k of keys) {
+        if (obj[k] !== undefined && obj[k] !== null && obj[k] !== "") {
+          return obj[k];
+        }
+      }
+      for (const subKey of Object.keys(obj)) {
+        if (typeof obj[subKey] === "object" && obj[subKey] !== null && !Array.isArray(obj[subKey])) {
+          const found = findDeepValue(obj[subKey], keys);
+          if (found !== undefined && found !== null && found !== "") {
+            return found;
+          }
+        }
+      }
+      return undefined;
+    };
+
+    const findDeepArray = (obj: any, keys: string[]): any[] => {
+      if (!obj || typeof obj !== "object") return [];
+      for (const k of keys) {
+        if (Array.isArray(obj[k]) && obj[k].length > 0) {
+          return obj[k];
+        }
+      }
+      for (const subKey of Object.keys(obj)) {
+        if (typeof obj[subKey] === "object" && obj[subKey] !== null) {
+          const found = findDeepArray(obj[subKey], keys);
+          if (found.length > 0) return found;
+        }
+      }
+      return [];
+    };
+
     const sanitizeBoeData = (data: any) => {
-      const boeNum =
-        typeof data.importBillNumber === "string"
-          ? data.importBillNumber.trim()
-          : typeof data.boeNumber === "string"
-          ? data.boeNumber.trim()
-          : data.importBillNumber
-          ? String(data.importBillNumber)
-          : "";
+      // 1. Extract raw candidates using deep key search
+      const rawBoeNum = findDeepValue(data, [
+        "importBillNumber",
+        "import_bill_number",
+        "boeNumber",
+        "boe_number",
+        "beNumber",
+        "be_number",
+        "beNo",
+        "be_no",
+        "billOfEntryNumber",
+        "bill_of_entry_no",
+        "billOfEntryNo",
+        "be_num",
+        "boe_num",
+      ]);
 
-      const docDate =
-        normalizeDateToIso(data.docDate || data.boeDate || data.filingDate || data.date) ||
-        new Date().toISOString().split("T")[0];
+      const rawDocDate = findDeepValue(data, [
+        "docDate",
+        "doc_date",
+        "boeDate",
+        "boe_date",
+        "beDate",
+        "be_date",
+        "filingDate",
+        "filing_date",
+        "date",
+      ]);
 
-      const customsPort =
-        typeof data.customsPort === "string" && data.customsPort.trim()
-          ? data.customsPort.trim()
-          : "INNSA1 - Nhava Sheva";
+      const rawPort = findDeepValue(data, [
+        "customsPort",
+        "customs_port",
+        "portCode",
+        "port_code",
+        "port",
+        "location",
+      ]);
 
-      const importerName =
-        typeof data.importerName === "string" && data.importerName.trim()
-          ? data.importerName.trim()
-          : "Alok Industries Limited";
+      const rawImporter = findDeepValue(data, [
+        "importerName",
+        "importer_name",
+        "importer",
+        "consignee",
+        "consigneeName",
+      ]);
 
-      const supplierName =
-        typeof data.supplierName === "string" && data.supplierName.trim()
-          ? data.supplierName.trim()
-          : data.exporterName || data.vendorName || "Foreign Supplier";
+      const rawSupplier = findDeepValue(data, [
+        "supplierName",
+        "supplier_name",
+        "exporterName",
+        "exporter_name",
+        "supplier",
+        "exporter",
+        "vendor",
+        "vendorName",
+        "foreign_supplier",
+      ]);
 
-      const supplierCountry =
-        typeof data.supplierCountry === "string" && data.supplierCountry.trim()
-          ? data.supplierCountry.trim().toUpperCase()
-          : data.originCountry || "GERMANY";
+      const rawCountry = findDeepValue(data, [
+        "supplierCountry",
+        "supplier_country",
+        "originCountry",
+        "origin_country",
+        "countryOfOrigin",
+        "country_of_origin",
+        "country_of_export",
+        "exportCountry",
+        "country",
+      ]);
 
-      const supplierInvoiceNo =
-        typeof data.supplierInvoiceNo === "string"
-          ? data.supplierInvoiceNo.trim()
-          : data.invoiceNumber || "";
+      const rawInvoice = findDeepValue(data, [
+        "supplierInvoiceNo",
+        "supplier_invoice_no",
+        "invoiceNumber",
+        "invoice_number",
+        "invoiceNo",
+        "invoice_no",
+        "invNo",
+      ]);
+
+      const rawCurrency = findDeepValue(data, [
+        "importCurrency",
+        "currency",
+        "curr",
+        "invoice_currency",
+      ]);
+
+      const rawExRate = findDeepValue(data, [
+        "exchangeRate",
+        "exchange_rate",
+        "rateOfExchange",
+        "rate_of_exchange",
+        "exRate",
+      ]);
+
+      const rawDutyPct = findDeepValue(data, [
+        "customsDutyPercent",
+        "customs_duty_percent",
+        "customsDutyRate",
+        "bcd",
+        "bcdRate",
+        "dutyPercent",
+      ]);
+
+      const rawIgstPct = findDeepValue(data, [
+        "igstPercent",
+        "igst_percent",
+        "igstRate",
+        "igst",
+      ]);
+
+      const rawItems = findDeepArray(data, [
+        "lineItems",
+        "line_items",
+        "items",
+        "goods",
+        "importedGoods",
+        "itemSchedule",
+        "schedule",
+      ]);
+
+      // 2. Track defaulted status
+      const importBillNumberDefaulted = !rawBoeNum || String(rawBoeNum).trim().length === 0;
+      const docDateDefaulted = !rawDocDate || String(normalizeDateToIso(rawDocDate)).trim().length === 0;
+      const customsPortDefaulted = !rawPort || String(rawPort).trim().length === 0;
+      const importerNameDefaulted = !rawImporter || String(rawImporter).trim().length === 0;
+      const supplierNameDefaulted = !rawSupplier || String(rawSupplier).trim().length === 0;
+      const supplierCountryDefaulted = !rawCountry || String(rawCountry).trim().length === 0;
+      const supplierInvoiceNoDefaulted = !rawInvoice || String(rawInvoice).trim().length === 0;
+
+      const hasRealExtractedLineItems =
+        rawItems.length > 0 &&
+        rawItems.some((it: any) => {
+          const desc =
+            it?.materialDescription ||
+            it?.description ||
+            it?.productDescription ||
+            it?.goods_description ||
+            it?.material_description;
+          return (
+            desc &&
+            typeof desc === "string" &&
+            desc.trim().length > 2 &&
+            !desc.toLowerCase().includes("textile polymer modifier") &&
+            !desc.toLowerCase().includes("import item")
+          );
+        });
+
+      const lineItemsDefaulted = !hasRealExtractedLineItems;
+
+      // 3. Resolve actual values without fake defaulting
+      const boeNum = importBillNumberDefaulted ? "" : String(rawBoeNum).trim();
+      const docDate = docDateDefaulted ? "" : normalizeDateToIso(rawDocDate);
+      const customsPort = customsPortDefaulted ? "" : String(rawPort).trim();
+      const importerName = importerNameDefaulted ? "" : String(rawImporter).trim();
+      const supplierName = supplierNameDefaulted ? "" : String(rawSupplier).trim();
+      const supplierCountry = supplierCountryDefaulted ? "" : String(rawCountry).trim().toUpperCase();
+      const supplierInvoiceNo = supplierInvoiceNoDefaulted ? "" : String(rawInvoice).trim();
 
       const customsClearanceDate = normalizeDateToIso(
         data.customsClearanceDate || data.clearanceDate || data.oocDate
@@ -8299,69 +8675,59 @@ Return ONLY valid JSON.`;
           ? "Rejected"
           : "Filed";
 
-      const importCurrency =
-        typeof data.importCurrency === "string" && data.importCurrency.trim()
-          ? data.importCurrency.trim().toUpperCase()
-          : data.currency || "USD";
-
-      const exchangeRate =
-        typeof data.exchangeRate === "number"
-          ? data.exchangeRate
-          : Number(data.exchangeRate) || 89.65;
-
-      const customsDutyPercent =
-        typeof data.customsDutyPercent === "number"
-          ? data.customsDutyPercent
-          : Number(data.customsDutyPercent) || 7.5;
-
-      const igstPercent =
-        typeof data.igstPercent === "number" ? data.igstPercent : Number(data.igstPercent) || 18.0;
-
-      const rawItems = Array.isArray(data.lineItems)
-        ? data.lineItems
-        : Array.isArray(data.items)
-        ? data.items
-        : [];
+      const importCurrency = rawCurrency ? String(rawCurrency).trim().toUpperCase() : "";
+      const exchangeRate = typeof rawExRate === "number" && rawExRate > 0 ? rawExRate : (Number(rawExRate) > 0 ? Number(rawExRate) : null);
+      const customsDutyPercent = typeof rawDutyPct === "number" ? rawDutyPct : (rawDutyPct !== undefined && rawDutyPct !== null && !isNaN(Number(rawDutyPct)) ? Number(rawDutyPct) : null);
+      const igstPercent = typeof rawIgstPct === "number" ? rawIgstPct : (rawIgstPct !== undefined && rawIgstPct !== null && !isNaN(Number(rawIgstPct)) ? Number(rawIgstPct) : null);
 
       const sanitizedItems = rawItems.map((item: any, idx: number) => {
-        const hsCode =
-          typeof item.hsCode === "string" && item.hsCode.trim()
-            ? item.hsCode.trim()
-            : item.itcHsCode || "38091010";
+        const rawItemDesc =
+          item.materialDescription ||
+          item.description ||
+          item.productDescription ||
+          item.goods_description ||
+          item.material_description;
 
-        const materialDescription =
-          typeof item.materialDescription === "string" && item.materialDescription.trim()
-            ? item.materialDescription.trim()
-            : item.description || item.productDescription || `Import Item ${idx + 1}`;
+        const isItemDescMissing =
+          !rawItemDesc ||
+          typeof rawItemDesc !== "string" ||
+          rawItemDesc.trim().length === 0;
 
+        const materialDescription = isItemDescMissing ? "" : rawItemDesc.trim();
+
+        const rawHsCode = item.hsCode || item.hs_code || item.itcHsCode || item.cth;
+        const hsCode = rawHsCode && String(rawHsCode).trim() ? String(rawHsCode).trim() : "";
+
+        const rawQty = item.quantityReceived ?? item.quantity;
         const quantityReceived =
-          typeof item.quantityReceived === "number"
-            ? item.quantityReceived
-            : typeof item.quantity === "number"
-            ? item.quantity
-            : Number(item.quantityReceived || item.quantity) || 0;
+          typeof rawQty === "number" && rawQty > 0
+            ? rawQty
+            : (Number(rawQty) > 0 ? Number(rawQty) : 0);
 
         const uom =
           typeof item.uom === "string" && item.uom.trim()
             ? item.uom.trim().toUpperCase()
-            : item.unit || "KGS";
+            : (item.unit ? String(item.unit).trim().toUpperCase() : "");
 
+        const rawUnitPrice = item.unitPriceFc ?? item.unitPrice;
         const unitPriceFc =
-          typeof item.unitPriceFc === "number"
-            ? item.unitPriceFc
-            : typeof item.unitPrice === "number"
-            ? item.unitPrice
-            : Number(item.unitPriceFc || item.unitPrice) || 0;
+          typeof rawUnitPrice === "number" && rawUnitPrice > 0
+            ? rawUnitPrice
+            : (Number(rawUnitPrice) > 0 ? Number(rawUnitPrice) : 0);
 
         const totalLineValueFc =
           typeof item.totalLineValueFc === "number" && item.totalLineValueFc > 0
             ? item.totalLineValueFc
-            : Number((quantityReceived * unitPriceFc).toFixed(2));
+            : (quantityReceived > 0 && unitPriceFc > 0 ? Number((quantityReceived * unitPriceFc).toFixed(2)) : 0);
 
         const totalLineValueInr =
           typeof item.totalLineValueInr === "number" && item.totalLineValueInr > 0
             ? item.totalLineValueInr
-            : Number((totalLineValueFc * exchangeRate).toFixed(2));
+            : (totalLineValueFc > 0 && exchangeRate && exchangeRate > 0 ? Number((totalLineValueFc * exchangeRate).toFixed(2)) : 0);
+
+        const isUncertain = Boolean(
+          isItemDescMissing || !hsCode || quantityReceived <= 0 || !uom || unitPriceFc <= 0
+        );
 
         return {
           id: item.id || `item-boe-${Date.now()}-${idx + 1}`,
@@ -8377,123 +8743,137 @@ Return ONLY valid JSON.`;
             typeof item.customsDutyAmount === "number"
               ? item.customsDutyAmount
               : Number(item.customsDutyAmount) || 0,
-          needsVerification: Boolean(
-            item.needsVerification || !hsCode || !materialDescription || quantityReceived <= 0
-          ),
+          needsVerification: isUncertain,
+          isDefaulted: isUncertain,
           notes: item.notes || "",
         };
       });
 
-      const totalItemsFc = sanitizedItems.reduce(
+      // DO NOT invent sample items if empty!
+      const finalLineItems = sanitizedItems;
+
+      const totalItemsFc = finalLineItems.reduce(
         (s: number, i: any) => s + (i.totalLineValueFc || 0),
         0
       );
+
       const totalInvoiceValueFc =
         typeof data.totalInvoiceValueFc === "number" && data.totalInvoiceValueFc > 0
           ? data.totalInvoiceValueFc
-          : Number(totalItemsFc.toFixed(2));
+          : (totalItemsFc > 0 ? Number(totalItemsFc.toFixed(2)) : 0);
 
       const totalInvoiceValueInr =
         typeof data.totalInvoiceValueInr === "number" && data.totalInvoiceValueInr > 0
           ? data.totalInvoiceValueInr
-          : Number((totalInvoiceValueFc * exchangeRate).toFixed(2));
+          : (totalInvoiceValueFc > 0 && exchangeRate && exchangeRate > 0 ? Number((totalInvoiceValueFc * exchangeRate).toFixed(2)) : 0);
 
       const customsDutyAmount =
         typeof data.customsDutyAmount === "number"
           ? data.customsDutyAmount
-          : Number(((totalInvoiceValueInr * customsDutyPercent) / 100).toFixed(2));
+          : (customsDutyPercent !== null && totalInvoiceValueInr > 0 ? Number(((totalInvoiceValueInr * customsDutyPercent) / 100).toFixed(2)) : 0);
 
       const igstAmount =
         typeof data.igstAmount === "number"
           ? data.igstAmount
-          : Number((((totalInvoiceValueInr + customsDutyAmount) * igstPercent) / 100).toFixed(2));
+          : (igstPercent !== null && totalInvoiceValueInr > 0 ? Number((((totalInvoiceValueInr + customsDutyAmount) * igstPercent) / 100).toFixed(2)) : 0);
+
+      const fieldMetadata = {
+        importBillNumberDefaulted,
+        docDateDefaulted,
+        customsPortDefaulted,
+        importerNameDefaulted,
+        supplierNameDefaulted,
+        supplierCountryDefaulted,
+        supplierInvoiceNoDefaulted,
+        lineItemsDefaulted,
+        rawImportBillNumber: rawBoeNum ? String(rawBoeNum).trim() : null,
+        rawDocDate: rawDocDate ? String(rawDocDate).trim() : null,
+        rawSupplierName: rawSupplier ? String(rawSupplier).trim() : null,
+        rawSupplierCountry: rawCountry ? String(rawCountry).trim() : null,
+      };
+
+      const isReliableExtraction =
+        !importBillNumberDefaulted &&
+        !docDateDefaulted &&
+        finalLineItems.length > 0 &&
+        !finalLineItems.some((i: any) => i.needsVerification);
 
       return {
-        importBillNumber: boeNum || `BOE-ICE-${Math.floor(1000000 + Math.random() * 9000000)}`,
-        docDate,
-        customsPort,
-        importerName,
-        supplierCountry,
-        supplierName,
-        supplierInvoiceNo,
-        customsDutyPercent,
-        customsDutyAmount,
-        igstPercent,
-        igstAmount,
-        totalInvoiceValueFc,
-        totalInvoiceValueInr,
-        importCurrency,
-        exchangeRate,
-        boeStatus,
-        customsClearanceDate: customsClearanceDate || (boeStatus === "Cleared" ? docDate : null),
-        notes: data.notes || "Inward Customs Clearance Entry under Bill of Entry",
-        licenceId: "", // Strictly unassigned
-        licenceNumber: "",
-        companyFileNumber: "",
-        lineItems:
-          sanitizedItems.length > 0
-            ? sanitizedItems
-            : [
-                {
-                  id: `item-boe-${Date.now()}-1`,
-                  itemNo: "1",
-                  hsCode: "38091010",
-                  materialDescription: "Textile Polymer Modifier Additive MB (Raw Material Grade A)",
-                  quantityReceived: 500,
-                  uom: "KGS",
-                  unitPriceFc: 3.5,
-                  totalLineValueFc: 1750.0,
-                  totalLineValueInr: Number((1750 * exchangeRate).toFixed(2)),
-                  customsDutyAmount: 0,
-                  needsVerification: false,
-                  notes: "",
-                },
-              ],
-        originalFilename: fileName || "Bill_of_Entry.pdf",
+        data: {
+          importBillNumber: boeNum,
+          docDate,
+          customsPort,
+          importerName,
+          supplierCountry,
+          supplierName,
+          supplierInvoiceNo,
+          customsDutyPercent,
+          customsDutyAmount,
+          igstPercent,
+          igstAmount,
+          totalInvoiceValueFc,
+          totalInvoiceValueInr,
+          importCurrency,
+          exchangeRate,
+          boeStatus,
+          customsClearanceDate: customsClearanceDate || (boeStatus === "Cleared" ? docDate : null),
+          notes: data.notes || "",
+          licenceId: "",
+          licenceNumber: "",
+          companyFileNumber: "",
+          lineItems: finalLineItems,
+          originalFilename: fileName || "Bill_of_Entry.pdf",
+          fieldMetadata,
+        },
+        isReliableExtraction,
       };
     };
 
-    const getFallbackBoeExtraction = () => ({
-      success: true,
-      extracted: sanitizeBoeData({
-        importBillNumber: `BOE-ICE-8492015`,
-        docDate: new Date().toISOString().split("T")[0],
-        customsPort: "INNSA1 - Nhava Sheva",
-        importerName: "Alok Industries Limited",
-        supplierName: "Dystar Singapore Pte Ltd",
-        supplierCountry: "SINGAPORE",
-        supplierInvoiceNo: "INV-SG-2026-081",
-        customsDutyPercent: 7.5,
-        igstPercent: 18.0,
-        importCurrency: "USD",
-        exchangeRate: 89.65,
-        boeStatus: "Cleared",
-        customsClearanceDate: new Date().toISOString().split("T")[0],
-        notes: "Inbound raw dye consignment cleared under Bill of Entry",
-        lineItems: [
-          {
-            hsCode: "32041111",
-            materialDescription: "Disperse Blue 79 Concentrate (200% Standard Commercial Strength)",
-            quantityReceived: 2500,
-            uom: "KGS",
-            unitPriceFc: 14.5,
-            totalLineValueFc: 36250.0,
-            totalLineValueInr: 3249812.5,
-            needsVerification: false,
+    const getFallbackBoeExtraction = (errorMsg?: string) => {
+      return {
+        success: false,
+        error: errorMsg || "AI document processing failed to extract data from this PDF.",
+        isLowConfidence: true,
+        isFallback: true,
+        notice: "Extraction failed: Could not read Bill of Entry details from the uploaded PDF document. Please enter required details manually or upload a clearer PDF document.",
+        extracted: {
+          importBillNumber: "",
+          docDate: "",
+          customsPort: "",
+          importerName: "",
+          supplierName: "",
+          supplierCountry: "",
+          supplierInvoiceNo: "",
+          customsDutyPercent: null,
+          customsDutyAmount: 0,
+          igstPercent: null,
+          igstAmount: 0,
+          totalInvoiceValueFc: 0,
+          totalInvoiceValueInr: 0,
+          importCurrency: "",
+          exchangeRate: null,
+          boeStatus: "Filed",
+          customsClearanceDate: null,
+          notes: "",
+          licenceId: "",
+          licenceNumber: "",
+          companyFileNumber: "",
+          lineItems: [],
+          originalFilename: fileName || "Bill_of_Entry.pdf",
+          fieldMetadata: {
+            importBillNumberDefaulted: true,
+            docDateDefaulted: true,
+            customsPortDefaulted: true,
+            importerNameDefaulted: true,
+            supplierNameDefaulted: true,
+            supplierCountryDefaulted: true,
+            supplierInvoiceNoDefaulted: true,
+            lineItemsDefaulted: true,
           },
-          {
-            hsCode: "38099190",
-            materialDescription: "Finishing Agent Auxiliary FR-400 (Flame Retardant Chemical)",
-            quantityReceived: 1000,
-            uom: "KGS",
-            unitPriceFc: 6.2,
-            totalLineValueFc: 6200.0,
-            totalLineValueInr: 555830.0,
-            needsVerification: false,
-          },
-        ],
-      }),
-    });
+        },
+        rawGeminiResponse: {},
+      };
+    };
 
     try {
       if (!apiKey) {
@@ -8510,14 +8890,14 @@ Return ONLY valid JSON.`;
         },
       });
 
-      const promptText = `You are an expert Indian Customs document analyst for Alok Industries. Extract all relevant information from this Indian Customs Bill of Entry (BoE) document into valid JSON.
-CRITICAL EXTRACTION RULES:
-1. HEADER & CUSTOMS DETAILS:
-   - BILL OF ENTRY NUMBER: Extract into "importBillNumber" (e.g. '8492015' or '5482910').
-   - BOE / FILING DATE: Extract the filing / presentation date into "docDate". Format as YYYY-MM-DD.
+      const promptText = `You are an expert Indian Customs EDI/ICEGATE document analyst for Alok Industries & Alok Master Batches. Extract all relevant information from this Indian Customs Bill of Entry (BoE) document into valid JSON.
+CRITICAL EXTRACTION & PAGE NAVIGATION RULES:
+1. HEADER & CUSTOMS DETAILS (Scan Page 1 Header, Top Right & Importer Block):
+   - BILL OF ENTRY NUMBER: Extract the 7-digit or 8-digit BoE number (e.g., '2973593' or '8492015') into "importBillNumber". Look for 'BE NO', 'B/E NO', 'Bill of Entry No'.
+   - BOE / FILING DATE: Extract filing date (e.g., '06/08/2026' or '06-08-2026') into "docDate" in YYYY-MM-DD format. Look for 'BE DATE', 'B/E DATE'.
    - PORT OF IMPORT: Extract customs port / port code into "customsPort" (e.g. 'INNSA1 - Nhava Sheva' or 'INBOM4 - Air Cargo Mumbai').
-   - IMPORTER NAME: Extract consignee / importer name into "importerName" (e.g. 'Alok Industries Limited').
-   - FOREIGN SUPPLIER: Extract foreign vendor / exporter name into "supplierName" and country into "supplierCountry".
+   - IMPORTER NAME: Extract consignee / importer name into "importerName" (e.g. 'ALOK MASTER BATCHES PRIVATE LIMITED' or 'ALOK INDUSTRIES LIMITED').
+   - FOREIGN SUPPLIER: Extract foreign supplier / seller / vendor name into "supplierName" and origin country into "supplierCountry" (e.g., 'CHINA', 'SINGAPORE', 'GERMANY').
    - SUPPLIER INVOICE: Extract commercial invoice number into "supplierInvoiceNo".
    - CURRENCY & EXCHANGE RATE: Extract currency code into "importCurrency" (USD, EUR, GBP, JPY, INR) and customs exchange rate into numeric "exchangeRate".
    - DUTY RATES: Extract basic customs duty percentage into numeric "customsDutyPercent" and IGST % into numeric "igstPercent".
@@ -8525,21 +8905,20 @@ CRITICAL EXTRACTION RULES:
    - CLEARANCE STATUS: If out of charge (OOC) or clearance date is shown, set "boeStatus": "Cleared" and "customsClearanceDate" in YYYY-MM-DD. Otherwise set "boeStatus": "Filed".
    - CRITICAL LICENCE RULE: Do NOT assign or match any Advance Licence. Leave licence fields blank/empty.
 
-2. ITEM-WISE IMPORTED GOODS SCHEDULE:
+2. ITEM-WISE IMPORTED GOODS SCHEDULE (Scan ALL PAGES - Page 1 through Page 6 for Item Schedule Tables):
    - Locate the item schedule / goods description table in the Bill of Entry document.
-   - For every line item, extract into the "lineItems" array:
-     * hsCode: ITC (HS) Code / CTH (e.g. '38091010', '32041111', '52010015')
-     * materialDescription: CRITICAL 100% VERBATIM TEXT EXTRACTION. Do NOT omit, summarize, or alter ANY word, grade number, specification, or code from the item description column.
+   - For every line item row, extract into the "lineItems" array:
+     * hsCode: ITC (HS) Code / CTH (e.g. '38091010', '32041111', '39011010', '52010015')
+     * materialDescription: CRITICAL 100% VERBATIM TEXT EXTRACTION. Do NOT omit, summarize, or alter ANY word, grade number, specification, or code from the item description column (e.g. 'Titanium Dioxide Rutile Grade R-902', 'Polyethylene Resin Grade LLDPE 218W').
      * quantityReceived: Actual numeric quantity invoiced/inwarded (preserve all decimals, do not round).
      * uom: Unit of Measurement (e.g. 'KGS', 'MTR', 'MT', 'NOS', 'LTR').
      * unitPriceFc: Numeric unit price in foreign currency.
      * totalLineValueFc: Numeric line value in foreign currency.
      * totalLineValueInr: Numeric line value in INR.
      * customsDutyAmount: Numeric duty amount for this line item if listed.
-     * needsVerification: boolean (true if description is ambiguous or quantity <= 0).
    - Do NOT merge separate items. Preserve each item row.
 
-Return ONLY valid JSON matching these fields.`;
+Return ONLY valid JSON with keys: importBillNumber, docDate, customsPort, importerName, supplierName, supplierCountry, supplierInvoiceNo, importCurrency, exchangeRate, customsDutyPercent, igstPercent, totalInvoiceValueFc, totalInvoiceValueInr, boeStatus, customsClearanceDate, lineItems.`;
 
       let contents: any;
       if (pdfBase64) {
@@ -8567,7 +8946,12 @@ Return ONLY valid JSON matching these fields.`;
         };
       }
 
-      const candidateModels = ["gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-flash-latest"];
+      const candidateModels = [
+        "gemini-3.6-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-latest",
+        "gemini-3.1-pro-preview",
+      ];
       let response: any = null;
       let isHighDemandSpike = false;
 
@@ -8604,15 +8988,12 @@ Return ONLY valid JSON matching these fields.`;
       }
 
       if (!response || !response.text) {
-        console.warn("[Gemini BoE Extraction] Models busy or unavailable. Returning fallback template.");
-        const fallback = getFallbackBoeExtraction();
-        return res.json({
-          ...fallback,
-          isHighDemandSpike,
-          notice: isHighDemandSpike
-            ? "Gemini models are temporarily experiencing high global demand. A pre-filled template has been generated. You can review and edit all fields in the review table."
-            : "AI extraction temporarily unavailable. Standard template generated.",
-        });
+        console.warn("[Gemini BoE Extraction] Models busy or unavailable. Returning extraction failure.");
+        return res.json(getFallbackBoeExtraction(
+          isHighDemandSpike
+            ? "Gemini models are temporarily experiencing high demand. Please try again or enter details manually."
+            : "AI extraction temporarily unavailable."
+        ));
       }
 
       const responseText = response.text || "{}";
@@ -8631,10 +9012,187 @@ Return ONLY valid JSON matching these fields.`;
         }
       }
 
-      const sanitized = sanitizeBoeData(rawExtracted);
-      res.json({ success: true, extracted: sanitized });
+      const sanitizedResult = sanitizeBoeData(rawExtracted);
+      const extData = sanitizedResult.data;
+      const hasBillNo = Boolean(extData.importBillNumber && extData.importBillNumber.trim().length > 0);
+      const hasLineItems = Array.isArray(extData.lineItems) && extData.lineItems.length > 0;
+
+      if (!hasBillNo && !hasLineItems) {
+        console.warn("[Gemini BoE Extraction] Empty or unreadable JSON extracted from PDF.");
+        return res.json({
+          success: false,
+          error: "Could not read Bill of Entry number or item schedule from this PDF document.",
+          isLowConfidence: true,
+          isFallback: false,
+          notice: "Extraction failed: The document could not be read or does not contain recognizable Bill of Entry fields. Please verify or enter details manually.",
+          extracted: extData,
+          rawGeminiResponse: rawExtracted,
+        });
+      }
+
+      const isReliable = sanitizedResult.isReliableExtraction;
+
+      if (!isReliable) {
+        console.warn("[Gemini BoE Extraction] Partial extraction detected.");
+        return res.json({
+          success: true,
+          isLowConfidence: true,
+          isFallback: false,
+          notice: "Partially extracted from PDF. Some fields could not be confirmed and are marked for verification. Please review and fill in missing values.",
+          extracted: extData,
+          rawGeminiResponse: rawExtracted,
+        });
+      }
+
+      return res.json({
+        success: true,
+        isLowConfidence: false,
+        isFallback: false,
+        notice: null,
+        extracted: extData,
+        rawGeminiResponse: rawExtracted,
+      });
     } catch (_err) {
-      res.json(getFallbackBoeExtraction());
+      return res.json(getFallbackBoeExtraction());
+    }
+  });
+
+  // POST /api/extract-shipping-bill-pdf - Gemini AI PDF Extraction for Shipping Bills
+  app.post("/api/extract-shipping-bill-pdf", async (req, res) => {
+    try {
+      const { pdfBase64, fileName } = req.body;
+      if (!pdfBase64) {
+        return res.status(400).json({ success: false, error: "No PDF base64 data provided" });
+      }
+
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(500).json({ success: false, error: "GEMINI_API_KEY is not configured on the server." });
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      const candidateModels = [
+        "gemini-3.6-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-latest",
+        "gemini-3.1-pro-preview",
+      ];
+
+      let rawExtracted = null;
+      let usedModel = "";
+
+      const prompt = `You are an expert Indian Customs and ICEGATE EDI Shipping Bill (SB) parser.
+Extract structured JSON data from this Shipping Bill PDF document.
+
+CRITICAL INSTRUCTIONS:
+1. Extract ONLY from the document text. Do NOT guess or invent missing values.
+2. If a value is missing or uncertain, leave it empty ("") or 0, and mark it in needsVerification = true.
+3. Extract Header details:
+   - shippingBillNumber: string (e.g. "3766969" or "SB-...")
+   - shippingBillDate: string (YYYY-MM-DD)
+   - portCode: string (e.g. "INNSA1")
+   - portOfExport: string (e.g. "INNSA1 - Nhava Sheva")
+   - destinationCountry: string (e.g. "United States", "Germany")
+   - buyerName: string (Consignee / Buyer name and address)
+   - invoiceNumber: string
+   - invoiceDate: string (YYYY-MM-DD)
+   - currency: string (e.g. "USD", "EUR", "GBP", "INR")
+   - exchangeRate: number (NUMERIC(18,4))
+   - licenceNumber: string (Advance Licence number from Part IV.B AA/DFIA licence details if explicitly printed, e.g. "0310998822" or similar)
+4. Extract Line Items (Part III "ITEM DETAILS"):
+   - Array of items, each with:
+     - itemSrNo: string ("1", "2", ...)
+     - itcHsCode: string (8-digit HS Code, e.g. "52081190")
+     - productDescription: string (exact text)
+     - quantity: number
+     - uom: string (e.g. "MTR", "KGS", "PCS")
+     - fobValueFc: number
+     - fobValueInr: number
+     - needsVerification: boolean
+
+Return ONLY valid JSON matching this structure:
+{
+  "shippingBillNumber": string,
+  "shippingBillDate": string,
+  "portCode": string,
+  "portOfExport": string,
+  "destinationCountry": string,
+  "buyerName": string,
+  "invoiceNumber": string,
+  "invoiceDate": string,
+  "currency": string,
+  "exchangeRate": number,
+  "licenceNumber": string,
+  "items": [
+    {
+      "itemSrNo": string,
+      "itcHsCode": string,
+      "productDescription": string,
+      "quantity": number,
+      "uom": string,
+      "fobValueFc": number,
+      "fobValueInr": number,
+      "needsVerification": boolean
+    }
+  ],
+  "isReliableExtraction": boolean,
+  "extractionNotes": string
+}`;
+
+      for (const modelName of candidateModels) {
+        try {
+          console.log(`[Gemini Shipping Bill Extraction] Trying model: ${modelName}`);
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: "application/pdf",
+                      data: pdfBase64,
+                    },
+                  },
+                  {
+                    text: prompt,
+                  },
+                ],
+              },
+            ],
+            config: {
+              responseMimeType: "application/json",
+              temperature: 0.0,
+            },
+          });
+
+          const textResult = response.text;
+          if (textResult) {
+            rawExtracted = JSON.parse(textResult);
+            usedModel = modelName;
+            break;
+          }
+        } catch (modelErr: any) {
+          console.warn(`[Gemini Shipping Bill Extraction] Model ${modelName} failed:`, modelErr?.message || modelErr);
+        }
+      }
+
+      if (!rawExtracted) {
+        return res.json({
+          success: false,
+          error: "All Gemini model attempts failed to extract Shipping Bill data from PDF.",
+          extracted: null,
+        });
+      }
+
+      return res.json({
+        success: true,
+        usedModel,
+        extracted: rawExtracted,
+      });
+    } catch (err: any) {
+      console.error("[Shipping Bill Extraction Error]:", err);
+      return res.status(500).json({ success: false, error: err.message || "Failed to extract Shipping Bill PDF" });
     }
   });
 

@@ -1,9 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Upload,
   FileText,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   X,
   Plus,
   Trash2,
@@ -19,8 +20,8 @@ import {
   ArrowRight,
   RotateCcw,
 } from 'lucide-react';
-import { ImportDocument, ImportLineItem, CurrencyCode } from '../types';
-import { extractBoePdf, createImportDocument } from '../lib/supabase';
+import { ImportDocument, ImportLineItem, CurrencyCode, AdvanceLicence } from '../types';
+import { extractBoePdf, createImportDocument, fetchLicencesFromDB } from '../lib/supabase';
 
 interface ImportPdfUploaderModalProps {
   isOpen: boolean;
@@ -92,6 +93,8 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
 
   // Review state
   const [hasExtractedData, setHasExtractedData] = useState(false);
+  const [isLowConfidence, setIsLowConfidence] = useState<boolean>(false);
+  const [fieldMetadata, setFieldMetadata] = useState<any>(null);
   const [formData, setFormData] = useState<any>({
     importBillNumber: '',
     docDate: new Date().toISOString().split('T')[0],
@@ -111,6 +114,27 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
 
   const [lineItems, setLineItems] = useState<any[]>([]);
   const [isSaving, setIsSaving] = useState(false);
+  const [licences, setLicences] = useState<AdvanceLicence[]>([]);
+  const [selectedLicenceId, setSelectedLicenceId] = useState<string>('');
+  const [isLoadingLicences, setIsLoadingLicences] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setIsLoadingLicences(true);
+      fetchLicencesFromDB()
+        .then((res) => {
+          if (res && Array.isArray(res.licences)) {
+            setLicences(res.licences);
+            // Auto-select if only 1 licence exists
+            if (res.licences.length === 1 && !selectedLicenceId) {
+              setSelectedLicenceId(res.licences[0].id);
+            }
+          }
+        })
+        .catch((err) => console.warn('Failed to fetch licences for modal:', err))
+        .finally(() => setIsLoadingLicences(false));
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -118,9 +142,12 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
     setSelectedFile(null);
     setHasExtractedData(false);
     setIsExtracting(false);
+    setIsLowConfidence(false);
+    setFieldMetadata(null);
     setExtractionNotice(null);
     setErrorMessage(null);
     setLineItems([]);
+    setSelectedLicenceId('');
   };
 
   const handleClose = () => {
@@ -129,19 +156,23 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
   };
 
   const handleApplyExtractedData = (extracted: any) => {
+    if (extracted.fieldMetadata) {
+      setFieldMetadata(extracted.fieldMetadata);
+    }
+
     setFormData({
-      importBillNumber: extracted.importBillNumber || `BOE-ICE-${Math.floor(1000000 + Math.random() * 9000000)}`,
-      docDate: extracted.docDate || new Date().toISOString().split('T')[0],
-      customsPort: extracted.customsPort || 'INNSA1 - Nhava Sheva',
-      importerName: extracted.importerName || 'Alok Industries Limited',
-      supplierName: extracted.supplierName || 'Foreign Supplier',
-      supplierCountry: extracted.supplierCountry || 'GERMANY',
+      importBillNumber: extracted.importBillNumber || '',
+      docDate: extracted.docDate || '',
+      customsPort: extracted.customsPort || '',
+      importerName: extracted.importerName || '',
+      supplierName: extracted.supplierName || '',
+      supplierCountry: extracted.supplierCountry || '',
       supplierInvoiceNo: extracted.supplierInvoiceNo || '',
-      customsDutyPercent: Number(extracted.customsDutyPercent) || 7.5,
-      igstPercent: Number(extracted.igstPercent) || 18.0,
+      customsDutyPercent: extracted.customsDutyPercent !== null && extracted.customsDutyPercent !== undefined ? Number(extracted.customsDutyPercent) : null,
+      igstPercent: extracted.igstPercent !== null && extracted.igstPercent !== undefined ? Number(extracted.igstPercent) : null,
       importCurrency: (extracted.importCurrency as CurrencyCode) || 'USD',
-      exchangeRate: Number(extracted.exchangeRate) || 89.65,
-      boeStatus: extracted.boeStatus || 'Cleared',
+      exchangeRate: extracted.exchangeRate !== null && extracted.exchangeRate !== undefined ? Number(extracted.exchangeRate) : null,
+      boeStatus: extracted.boeStatus || 'Filed',
       customsClearanceDate: extracted.customsClearanceDate || extracted.docDate || '',
       notes: extracted.notes || '',
     });
@@ -152,35 +183,21 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
         items.map((it: any, idx: number) => ({
           id: it.id || `item-boe-${Date.now()}-${idx + 1}`,
           itemNo: String(idx + 1),
-          hsCode: it.hsCode || '38091010',
-          materialDescription: it.materialDescription || `Import Item ${idx + 1}`,
+          hsCode: it.hsCode || '',
+          materialDescription: it.materialDescription || '',
           quantityReceived: Number(it.quantityReceived) || 0,
-          uom: it.uom || 'KGS',
+          uom: it.uom || '',
           unitPriceFc: Number(it.unitPriceFc) || 0,
           totalLineValueFc: Number(it.totalLineValueFc) || 0,
           totalLineValueInr: Number(it.totalLineValueInr) || 0,
           customsDutyAmount: Number(it.customsDutyAmount) || 0,
-          needsVerification: Boolean(it.needsVerification),
+          needsVerification: Boolean(it.needsVerification || it.isDefaulted || !it.materialDescription || !it.hsCode || !it.quantityReceived || !it.uom || !it.unitPriceFc),
+          isDefaulted: Boolean(it.isDefaulted),
           notes: it.notes || '',
         }))
       );
     } else {
-      setLineItems([
-        {
-          id: `item-boe-${Date.now()}-1`,
-          itemNo: '1',
-          hsCode: '38091010',
-          materialDescription: 'Textile Raw Material Additive',
-          quantityReceived: 1000,
-          uom: 'KGS',
-          unitPriceFc: 5.0,
-          totalLineValueFc: 5000.0,
-          totalLineValueInr: 448250.0,
-          customsDutyAmount: 33618.75,
-          needsVerification: false,
-          notes: '',
-        },
-      ]);
+      setLineItems([]);
     }
 
     setHasExtractedData(true);
@@ -191,6 +208,8 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
     setIsExtracting(true);
     setErrorMessage(null);
     setExtractionNotice(null);
+    setIsLowConfidence(false);
+    setFieldMetadata(null);
 
     try {
       const reader = new FileReader();
@@ -202,7 +221,15 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
       const base64Data = await base64Promise;
 
       const result = await extractBoePdf(base64Data, file.name);
-      if (result && result.extracted) {
+
+      if (result && result.success === false) {
+        setIsLowConfidence(true);
+        setExtractionNotice(
+          result.notice || (result as any).error || 'Extraction failed: Could not read Bill of Entry details from the uploaded PDF document. Please enter required details manually or upload a clearer PDF document.'
+        );
+        handleApplyExtractedData(result.extracted || {});
+      } else if (result && result.extracted) {
+        setIsLowConfidence(Boolean(result.isLowConfidence || result.isFallback));
         if (result.notice) {
           setExtractionNotice(result.notice);
         }
@@ -212,14 +239,26 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
       }
     } catch (err: any) {
       console.warn('[handleProcessFile] BoE extraction notice:', err);
-      setErrorMessage(
-        err.message || 'AI document processing encountered an issue. Loaded editable template.'
+      setIsLowConfidence(true);
+      setExtractionNotice(
+        'Extraction Failed: Could not read Bill of Entry details from the uploaded PDF document. Please enter required details manually or upload a clearer PDF document.'
       );
-      // Fallback with sample data prefilled
       handleApplyExtractedData({
-        ...SAMPLE_BOE_DATA,
-        importBillNumber: `BOE-ICE-${Math.floor(1000000 + Math.random() * 9000000)}`,
-        originalFilename: file.name,
+        importBillNumber: '',
+        docDate: '',
+        customsPort: '',
+        importerName: '',
+        supplierName: '',
+        supplierCountry: '',
+        supplierInvoiceNo: '',
+        customsDutyPercent: null,
+        igstPercent: null,
+        importCurrency: 'USD',
+        exchangeRate: null,
+        boeStatus: 'Filed',
+        customsClearanceDate: '',
+        notes: '',
+        lineItems: [],
       });
     } finally {
       setIsExtracting(false);
@@ -297,6 +336,26 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
   const calculatedTotalInr = Number((calculatedTotalFc * (Number(formData.exchangeRate) || 89.65)).toFixed(2));
   const calculatedTotalQty = lineItems.reduce((s, it) => s + (Number(it.quantityReceived) || 0), 0);
 
+  // Validation
+  const isHeaderValid = Boolean(
+    formData.importBillNumber?.trim() &&
+    formData.docDate &&
+    selectedLicenceId?.trim()
+  );
+
+  const areLineItemsValid =
+    lineItems.length > 0 &&
+    lineItems.every(
+      (it) =>
+        it.materialDescription?.trim() &&
+        it.hsCode?.trim() &&
+        Number(it.quantityReceived) > 0 &&
+        it.uom?.trim() &&
+        Number(it.unitPriceFc) > 0
+    );
+
+  const isFormValid = isHeaderValid && areLineItemsValid;
+
   // Save reviewed Bill of Entry
   const handleSaveToRegister = async () => {
     if (!formData.importBillNumber.trim()) {
@@ -307,33 +366,52 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
       alert('Please provide a Bill of Entry filing date.');
       return;
     }
+    if (!selectedLicenceId || selectedLicenceId.trim() === '') {
+      alert('Please select an Advance Licence before saving. All Import Documents must be mapped to an Advance Licence.');
+      return;
+    }
     if (lineItems.length === 0) {
       alert('Please include at least one import line item.');
       return;
     }
+
+    const unverifiedItem = lineItems.find(
+      (it) =>
+        !it.materialDescription?.trim() ||
+        !it.hsCode?.trim() ||
+        Number(it.quantityReceived) <= 0 ||
+        !it.uom?.trim() ||
+        Number(it.unitPriceFc) <= 0
+    );
+    if (unverifiedItem) {
+      alert('Please complete all line item fields (Material Description, HS Code, Qty, UOM, and Unit Price) before saving.');
+      return;
+    }
+
+    const selectedLicence = licences.find((l) => l.id === selectedLicenceId);
 
     setIsSaving(true);
     try {
       const payload: Partial<ImportDocument> = {
         importBillNumber: formData.importBillNumber.trim(),
         docDate: formData.docDate,
-        customsPort: formData.customsPort || 'INNSA1 - Nhava Sheva',
-        importerName: formData.importerName || 'Alok Industries Limited',
-        supplierName: formData.supplierName || 'Foreign Supplier',
-        supplierCountry: formData.supplierCountry || 'GERMANY',
+        customsPort: formData.customsPort || '',
+        importerName: formData.importerName || '',
+        supplierName: formData.supplierName || '',
+        supplierCountry: formData.supplierCountry || '',
         supplierInvoiceNo: formData.supplierInvoiceNo || '',
         importCurrency: formData.importCurrency || 'USD',
-        exchangeRate: Number(formData.exchangeRate) || 89.65,
+        exchangeRate: formData.exchangeRate !== null ? Number(formData.exchangeRate) : null,
         totalInvoiceValueFc: calculatedTotalFc,
         totalInvoiceValueInr: calculatedTotalInr,
-        customsDutyPercent: Number(formData.customsDutyPercent) || 7.5,
-        igstPercent: Number(formData.igstPercent) || 18.0,
-        boeStatus: formData.boeStatus || 'Cleared',
+        customsDutyPercent: formData.customsDutyPercent !== null ? Number(formData.customsDutyPercent) : null,
+        igstPercent: formData.igstPercent !== null ? Number(formData.igstPercent) : null,
+        boeStatus: formData.boeStatus || 'Filed',
         customsClearanceDate: formData.customsClearanceDate || null,
-        notes: formData.notes || 'Inward import actual transactions via Bill of Entry PDF',
-        licenceId: '', // Strictly unassigned
-        licenceNumber: '',
-        companyFileNumber: '',
+        notes: formData.notes || '',
+        licenceId: selectedLicenceId,
+        licenceNumber: selectedLicence?.licenceNumber || '',
+        companyFileNumber: selectedLicence?.fileNumber || '',
         lineItems: lineItems as any,
       };
 
@@ -469,9 +547,7 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
                     <span className="font-bold">Editable Inward Import Review:</span> Verify and adjust
                     the extracted Bill of Entry header details and schedule of actual imported items below.
                     <p className="mt-0.5 text-amber-800">
-                      <strong>Advance Licence Assignment:</strong> Unassigned. Licences are not automatically
-                      assigned during initial upload; matching and import quota utilization take place in subsequent
-                      reconciliation workflows.
+                      <strong>Advance Licence Mapping:</strong> Select an Advance Licence below to link this Bill of Entry to an authorized duty-free quota.
                     </p>
                   </div>
                 </div>
@@ -486,12 +562,30 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
                 </button>
               </div>
 
-              {extractionNotice && (
+              {isLowConfidence ? (
+                <div className="p-4 bg-amber-50 border-2 border-amber-300/90 rounded-xl text-amber-950 flex items-start gap-3 shadow-2xs">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <span className="font-bold text-amber-900 block text-xs uppercase tracking-wider flex items-center gap-1.5">
+                      Extraction Verification Required
+                      <span className="bg-amber-200 text-amber-900 font-bold px-1.5 py-0.5 rounded text-[10px] lowercase font-mono">
+                        low confidence
+                      </span>
+                    </span>
+                    <p className="text-xs text-amber-900 font-medium leading-relaxed">
+                      {extractionNotice || "Could not reliably extract this document — please verify every field before saving."}
+                    </p>
+                    <span className="text-[11px] text-amber-800 block">
+                      Fields tagged with <span className="bg-amber-200/80 text-amber-900 font-bold px-1 py-0.5 rounded text-[10px]">Unverified / Default</span> could not be confirmed from the uploaded PDF and require manual check or editing before saving to register.
+                    </span>
+                  </div>
+                </div>
+              ) : extractionNotice ? (
                 <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl text-xs text-sky-800 flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-sky-600 flex-shrink-0" />
                   <span>{extractionNotice}</span>
                 </div>
-              )}
+              ) : null}
 
               {/* BoE Header Details (Editable Inputs) */}
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
@@ -505,41 +599,107 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
                   </span>
                 </div>
 
+                {/* Licence Selector Bar */}
+                <div className="p-3 bg-amber-50/80 border border-amber-300/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                    <div>
+                      <span className="text-xs font-bold text-amber-900 block">
+                        Map to Advance Licence <span className="text-rose-600">*</span>
+                      </span>
+                      <span className="text-[11px] text-amber-800">
+                        Required to record duty-free raw material debit in PostgreSQL
+                      </span>
+                    </div>
+                  </div>
+                  <div className="min-w-[280px]">
+                    <select
+                      value={selectedLicenceId}
+                      onChange={(e) => setSelectedLicenceId(e.target.value)}
+                      className={`w-full text-xs px-3 py-2 bg-white border rounded-lg font-medium shadow-2xs focus:ring-2 focus:ring-sky-500 ${
+                        !selectedLicenceId
+                          ? 'border-rose-400 text-rose-900 font-semibold bg-rose-50/40'
+                          : 'border-emerald-500 text-slate-900 bg-emerald-50/20'
+                      }`}
+                    >
+                      <option value="">-- Select Advance Licence (Required) --</option>
+                      {licences.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.licenceNumber} (File #{l.fileNumber || 'N/A'}) - {l.exporterName || 'Alok Industries'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Bill of Entry No *
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Bill of Entry No *
+                      </label>
+                      {fieldMetadata?.importBillNumberDefaulted && (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded flex items-center gap-0.5">
+                          <AlertCircle className="w-2.5 h-2.5 text-amber-600" /> Unverified / Default
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={formData.importBillNumber}
                       onChange={(e) => setFormData({ ...formData, importBillNumber: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-sky-500 font-mono"
+                      className={`w-full text-xs px-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-sky-500 font-mono ${
+                        fieldMetadata?.importBillNumberDefaulted
+                          ? 'border-amber-400 bg-amber-50/40 text-amber-950'
+                          : 'border-slate-300 bg-white'
+                      }`}
                       placeholder="e.g. 8492015"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Filing Date *
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Filing Date *
+                      </label>
+                      {fieldMetadata?.docDateDefaulted && (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded flex items-center gap-0.5">
+                          <AlertCircle className="w-2.5 h-2.5 text-amber-600" /> Unverified
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="date"
                       value={formData.docDate}
                       onChange={(e) => setFormData({ ...formData, docDate: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-sky-500"
+                      className={`w-full text-xs px-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-sky-500 ${
+                        fieldMetadata?.docDateDefaulted
+                          ? 'border-amber-400 bg-amber-50/40 text-amber-950'
+                          : 'border-slate-300 bg-white'
+                      }`}
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Customs Port
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Customs Port
+                      </label>
+                      {fieldMetadata?.customsPortDefaulted && (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded flex items-center gap-0.5">
+                          <AlertCircle className="w-2.5 h-2.5 text-amber-600" /> Defaulted
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={formData.customsPort}
                       onChange={(e) => setFormData({ ...formData, customsPort: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-sky-500"
+                      className={`w-full text-xs px-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-sky-500 ${
+                        fieldMetadata?.customsPortDefaulted
+                          ? 'border-amber-400 bg-amber-50/40 text-amber-950'
+                          : 'border-slate-300 bg-white'
+                      }`}
                       placeholder="e.g. INNSA1 - Nhava Sheva"
                     />
                   </div>
@@ -560,40 +720,73 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Foreign Supplier Name
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Foreign Supplier Name
+                      </label>
+                      {fieldMetadata?.supplierNameDefaulted && (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded flex items-center gap-0.5">
+                          <AlertCircle className="w-2.5 h-2.5 text-amber-600" /> Defaulted
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={formData.supplierName}
                       onChange={(e) => setFormData({ ...formData, supplierName: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-sky-500"
+                      className={`w-full text-xs px-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-sky-500 ${
+                        fieldMetadata?.supplierNameDefaulted
+                          ? 'border-amber-400 bg-amber-50/40 text-amber-950'
+                          : 'border-slate-300 bg-white'
+                      }`}
                       placeholder="e.g. Dystar Singapore Pte Ltd"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Origin Country
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Origin Country
+                      </label>
+                      {fieldMetadata?.supplierCountryDefaulted && (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded flex items-center gap-0.5">
+                          <AlertCircle className="w-2.5 h-2.5 text-amber-600" /> Defaulted
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={formData.supplierCountry}
                       onChange={(e) => setFormData({ ...formData, supplierCountry: e.target.value.toUpperCase() })}
-                      className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-sky-500"
+                      className={`w-full text-xs px-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-sky-500 ${
+                        fieldMetadata?.supplierCountryDefaulted
+                          ? 'border-amber-400 bg-amber-50/40 text-amber-950'
+                          : 'border-slate-300 bg-white'
+                      }`}
                       placeholder="e.g. SINGAPORE"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Supplier Invoice No
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Supplier Invoice No
+                      </label>
+                      {fieldMetadata?.supplierInvoiceNoDefaulted && (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 rounded flex items-center gap-0.5">
+                          <AlertCircle className="w-2.5 h-2.5 text-amber-600" /> Unverified
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       value={formData.supplierInvoiceNo}
                       onChange={(e) => setFormData({ ...formData, supplierInvoiceNo: e.target.value })}
-                      className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-sky-500"
+                      className={`w-full text-xs px-2.5 py-1.5 border rounded-lg focus:ring-1 focus:ring-sky-500 ${
+                        fieldMetadata?.supplierInvoiceNoDefaulted
+                          ? 'border-amber-400 bg-amber-50/40 text-amber-950'
+                          : 'border-slate-300 bg-white'
+                      }`}
                       placeholder="e.g. INV-2026-081"
                     />
                   </div>
@@ -678,27 +871,45 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200 bg-white">
-                        {lineItems.map((item, idx) => (
-                          <tr key={item.id || idx} className="hover:bg-slate-50/70 transition-colors">
-                            <td className="py-2 px-3 text-center font-mono text-slate-400">{idx + 1}</td>
-                            <td className="py-2 px-3">
-                              <input
-                                type="text"
-                                value={item.hsCode}
-                                onChange={(e) => handleUpdateLineItem(idx, 'hsCode', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-200 rounded text-xs font-mono focus:border-sky-500 focus:bg-white bg-slate-50/50"
-                                placeholder="38091010"
-                              />
-                            </td>
-                            <td className="py-2 px-3">
-                              <input
-                                type="text"
-                                value={item.materialDescription}
-                                onChange={(e) => handleUpdateLineItem(idx, 'materialDescription', e.target.value)}
-                                className="w-full px-2 py-1 border border-slate-200 rounded text-xs focus:border-sky-500 focus:bg-white bg-slate-50/50"
-                                placeholder="Exact description as per BoE document"
-                              />
-                            </td>
+                        {lineItems.map((item, idx) => {
+                          const isUnverified = Boolean(item.isDefaulted || item.needsVerification);
+                          return (
+                            <tr key={item.id || idx} className={`hover:bg-slate-50/70 transition-colors ${isUnverified ? 'bg-amber-50/20' : ''}`}>
+                              <td className="py-2 px-3 text-center font-mono text-slate-400">{idx + 1}</td>
+                              <td className="py-2 px-3">
+                                <input
+                                  type="text"
+                                  value={item.hsCode}
+                                  onChange={(e) => handleUpdateLineItem(idx, 'hsCode', e.target.value)}
+                                  className={`w-full px-2 py-1 border rounded text-xs font-mono focus:border-sky-500 ${
+                                    isUnverified
+                                      ? 'border-amber-400 bg-amber-50/40 text-amber-950 font-semibold'
+                                      : 'border-slate-200 bg-slate-50/50'
+                                  }`}
+                                  placeholder="38091010"
+                                />
+                              </td>
+                              <td className="py-2 px-3">
+                                <div className="space-y-1">
+                                  <input
+                                    type="text"
+                                    value={item.materialDescription}
+                                    onChange={(e) => handleUpdateLineItem(idx, 'materialDescription', e.target.value)}
+                                    className={`w-full px-2 py-1 border rounded text-xs focus:border-sky-500 ${
+                                      isUnverified
+                                        ? 'border-amber-400 bg-amber-50/40 text-amber-950 font-medium'
+                                        : 'border-slate-200 bg-slate-50/50'
+                                    }`}
+                                    placeholder="Exact description as per BoE document"
+                                  />
+                                  {isUnverified && (
+                                    <div className="flex items-center gap-1 text-[9.5px] font-bold text-amber-800">
+                                      <AlertCircle className="w-2.5 h-2.5 text-amber-600" />
+                                      <span>Unverified / Default Description — Please verify</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
                             <td className="py-2 px-3">
                               <input
                                 type="number"
@@ -750,7 +961,8 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
                               </button>
                             </td>
                           </tr>
-                        ))}
+                        );
+                      })}
                       </tbody>
                       <tfoot className="bg-slate-100 font-bold text-xs text-slate-800 border-t border-slate-300">
                         <tr>
@@ -799,14 +1011,20 @@ export const ImportPdfUploaderModal: React.FC<ImportPdfUploaderModalProps> = ({
 
           {hasExtractedData && (
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-500 hidden sm:inline">
-                {lineItems.length} item(s) ready to commit to Inward Register
-              </span>
+              {!isFormValid ? (
+                <span className="text-xs text-rose-600 font-semibold bg-rose-50 px-2.5 py-1 rounded-md border border-rose-200">
+                  Required: Bill No, Date, Licence & Item details
+                </span>
+              ) : (
+                <span className="text-xs text-slate-500 hidden sm:inline">
+                  {lineItems.length} item(s) ready to commit to Inward Register
+                </span>
+              )}
               <button
                 type="button"
-                disabled={isSaving}
+                disabled={!isFormValid || isSaving}
                 onClick={handleSaveToRegister}
-                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-50 rounded-lg transition-colors inline-flex items-center gap-1.5 shadow-sm"
+                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition-colors inline-flex items-center gap-1.5 shadow-sm"
               >
                 {isSaving ? (
                   <>
