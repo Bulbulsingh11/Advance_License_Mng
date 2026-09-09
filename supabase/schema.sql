@@ -1,3 +1,55 @@
+
+-- ============================================================================
+-- AUTHENTICATION & PROFILES
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS user_profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('Admin', 'Viewer')) DEFAULT 'Viewer',
+    unit TEXT DEFAULT 'Global',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can read own profile" ON user_profiles;
+CREATE POLICY "Users can read own profile" ON user_profiles FOR SELECT USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "Admins can read all profiles" ON user_profiles;
+CREATE POLICY "Admins can read all profiles" ON user_profiles FOR SELECT USING (
+  (SELECT role FROM user_profiles WHERE id = auth.uid()) = 'Admin'
+);
+
+
+-- Trigger to auto-create user_profiles for new Supabase Auth users
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger AS $$
+BEGIN
+  INSERT INTO public.user_profiles (id, email, role, unit)
+  VALUES (new.id, new.email, 'Viewer', 'Global');
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- Function to check if user is Admin
+CREATE OR REPLACE FUNCTION is_admin() RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM user_profiles WHERE id = auth.uid() AND role = 'Admin'
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- Function to check if user is Viewer
+CREATE OR REPLACE FUNCTION is_viewer() RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM user_profiles WHERE id = auth.uid() AND role = 'Viewer'
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
 -- ============================================================================
 -- ALOK INDUSTRIES - ADVANCE LICENCE MANAGEMENT SYSTEM (ALMS)
 -- SUPABASE POSTGRESQL DATABASE SCHEMA
@@ -186,25 +238,16 @@ ALTER TABLE licence_import_items ENABLE ROW LEVEL SECURITY;
 
 -- Permissive policies for authenticated, service_role, and anon
 DROP POLICY IF EXISTS "Allow full access to licence_master" ON licence_master;
-CREATE POLICY "Allow full access to licence_master"
-    ON licence_master
-    FOR ALL
-    USING (true)
-    WITH CHECK (true);
+CREATE POLICY "Admins have full access to licence_master" ON licence_master FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read licence_master" ON licence_master FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to licence_export_items" ON licence_export_items;
-CREATE POLICY "Allow full access to licence_export_items"
-    ON licence_export_items
-    FOR ALL
-    USING (true)
-    WITH CHECK (true);
+CREATE POLICY "Admins have full access to licence_export_items" ON licence_export_items FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read licence_export_items" ON licence_export_items FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to licence_import_items" ON licence_import_items;
-CREATE POLICY "Allow full access to licence_import_items"
-    ON licence_import_items
-    FOR ALL
-    USING (true)
-    WITH CHECK (true);
+CREATE POLICY "Admins have full access to licence_import_items" ON licence_import_items FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read licence_import_items" ON licence_import_items FOR SELECT USING (is_viewer());
 
 -- ----------------------------------------------------------------------------
 -- TABLE 3: shipping_bills (Export Shipping Bills Mapped to Advance Licences)
@@ -391,16 +434,20 @@ ALTER TABLE brc_tracking ENABLE ROW LEVEL SECURITY;
 ALTER TABLE export_obligation_tracking ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow full access to shipping_bills" ON shipping_bills;
-CREATE POLICY "Allow full access to shipping_bills" ON shipping_bills FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to shipping_bills" ON shipping_bills FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read shipping_bills" ON shipping_bills FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to shipping_bill_items" ON shipping_bill_items;
-CREATE POLICY "Allow full access to shipping_bill_items" ON shipping_bill_items FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to shipping_bill_items" ON shipping_bill_items FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read shipping_bill_items" ON shipping_bill_items FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to brc_tracking" ON brc_tracking;
-CREATE POLICY "Allow full access to brc_tracking" ON brc_tracking FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to brc_tracking" ON brc_tracking FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read brc_tracking" ON brc_tracking FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to export_obligation_tracking" ON export_obligation_tracking;
-CREATE POLICY "Allow full access to export_obligation_tracking" ON export_obligation_tracking FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to export_obligation_tracking" ON export_obligation_tracking FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read export_obligation_tracking" ON export_obligation_tracking FOR SELECT USING (is_viewer());
 
 -- ----------------------------------------------------------------------------
 -- TABLE 7: utilization_snapshots (Daily Historical Snapshots for Trend Analysis)
@@ -476,10 +523,12 @@ ALTER TABLE utilization_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE utilization_alerts ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow full access to utilization_snapshots" ON utilization_snapshots;
-CREATE POLICY "Allow full access to utilization_snapshots" ON utilization_snapshots FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to utilization_snapshots" ON utilization_snapshots FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read utilization_snapshots" ON utilization_snapshots FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to utilization_alerts" ON utilization_alerts;
-CREATE POLICY "Allow full access to utilization_alerts" ON utilization_alerts FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to utilization_alerts" ON utilization_alerts FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read utilization_alerts" ON utilization_alerts FOR SELECT USING (is_viewer());
 
 -- ============================================================================
 -- PHASE 2: IMPORT TRANSACTIONS & INBOUND LOGISTICS MODULE TABLES
@@ -644,16 +693,20 @@ ALTER TABLE goods_receipt_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE consumption_tracking ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow full access to import_documents" ON import_documents;
-CREATE POLICY "Allow full access to import_documents" ON import_documents FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to import_documents" ON import_documents FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read import_documents" ON import_documents FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to import_line_items" ON import_line_items;
-CREATE POLICY "Allow full access to import_line_items" ON import_line_items FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to import_line_items" ON import_line_items FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read import_line_items" ON import_line_items FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to goods_receipt_notes" ON goods_receipt_notes;
-CREATE POLICY "Allow full access to goods_receipt_notes" ON goods_receipt_notes FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to goods_receipt_notes" ON goods_receipt_notes FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read goods_receipt_notes" ON goods_receipt_notes FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to consumption_tracking" ON consumption_tracking;
-CREATE POLICY "Allow full access to consumption_tracking" ON consumption_tracking FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to consumption_tracking" ON consumption_tracking FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read consumption_tracking" ON consumption_tracking FOR SELECT USING (is_viewer());
 
 -- ============================================================================
 -- PHASE 1: MATERIALS & SION NORMS MASTER DATA LAYER
@@ -802,19 +855,24 @@ ALTER TABLE sion_norms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE material_specifications ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow full access to hs_code_master" ON hs_code_master;
-CREATE POLICY "Allow full access to hs_code_master" ON hs_code_master FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to hs_code_master" ON hs_code_master FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read hs_code_master" ON hs_code_master FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to raw_materials" ON raw_materials;
-CREATE POLICY "Allow full access to raw_materials" ON raw_materials FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to raw_materials" ON raw_materials FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read raw_materials" ON raw_materials FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to finished_goods" ON finished_goods;
-CREATE POLICY "Allow full access to finished_goods" ON finished_goods FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to finished_goods" ON finished_goods FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read finished_goods" ON finished_goods FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to sion_norms" ON sion_norms;
-CREATE POLICY "Allow full access to sion_norms" ON sion_norms FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to sion_norms" ON sion_norms FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read sion_norms" ON sion_norms FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to material_specifications" ON material_specifications;
-CREATE POLICY "Allow full access to material_specifications" ON material_specifications FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to material_specifications" ON material_specifications FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read material_specifications" ON material_specifications FOR SELECT USING (is_viewer());
 
 -- ============================================================================
 -- PHASE 5: LICENCE FINDER & INTELLIGENT RECOMMENDATION ENGINE TABLES
@@ -901,10 +959,12 @@ ALTER TABLE licence_recommendations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE licence_compatibility_scores ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow full access to licence_recommendations" ON licence_recommendations;
-CREATE POLICY "Allow full access to licence_recommendations" ON licence_recommendations FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to licence_recommendations" ON licence_recommendations FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read licence_recommendations" ON licence_recommendations FOR SELECT USING (is_viewer());
 
 DROP POLICY IF EXISTS "Allow full access to licence_compatibility_scores" ON licence_compatibility_scores;
-CREATE POLICY "Allow full access to licence_compatibility_scores" ON licence_compatibility_scores FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admins have full access to licence_compatibility_scores" ON licence_compatibility_scores FOR ALL USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Viewers can read licence_compatibility_scores" ON licence_compatibility_scores FOR SELECT USING (is_viewer());
 
 
 

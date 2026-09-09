@@ -55,6 +55,13 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     label: 'Settings',
     iconName: 'Settings',
     description: 'System preferences, exchange rates, SION templates, and user access roles.'
+  },
+  {
+    id: 'guide',
+    label: 'Portal Guide',
+    iconName: 'BookOpen',
+    description: 'Comprehensive guide explaining DGFT Advance Licencing, SION norms, AI extraction, and workflow.',
+    badge: 'Help'
   }
 ];
 

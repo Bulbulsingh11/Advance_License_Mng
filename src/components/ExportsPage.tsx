@@ -55,7 +55,8 @@ import {
   updateShippingBillInDB, 
   deleteShippingBillFromDB, 
   updateBrcTrackingInDB,
-  fetchLicencesFromDB 
+  fetchLicencesFromDB,
+  generateUUID
 } from '../lib/supabase';
 import { ExportExcelUploaderModal } from './ExportExcelUploaderModal';
 import { ExportPdfUploaderModal } from './ExportPdfUploaderModal';
@@ -551,7 +552,7 @@ export const ExportsPage: React.FC = () => {
           const first = found.exportItems[0];
           setLineItems([
             {
-              id: `item-${Date.now()}`,
+              id: generateUUID(),
               itemSrNo: '1',
               itcHsCode: first.itcHsCode || '52081190',
               productDescription: first.productDescription || '',
@@ -593,7 +594,7 @@ export const ExportsPage: React.FC = () => {
     setLineItems((prev) => [
       ...prev,
       {
-        id: `item-${Date.now()}`,
+        id: generateUUID(),
         itemSrNo: String(prev.length + 1),
         itcHsCode: '52081190',
         productDescription: 'Textile Finished Fabrics / Cotton Piece Goods',
@@ -627,7 +628,11 @@ export const ExportsPage: React.FC = () => {
 
     setIsSaving(true);
     try {
+      const shippingBillId = generateUUID();
+      const brcId = generateUUID();
+
       const payload: Partial<ShippingBill> = {
+        id: shippingBillId,
         licenceId: lic.id,
         licenceNumber: lic.licenceNumber,
         companyFileNumber: lic.fileNumber,
@@ -647,8 +652,8 @@ export const ExportsPage: React.FC = () => {
         status: billStatus,
         remarks,
         items: lineItems.map((itm, idx) => ({
-          id: `item-${Date.now()}-${idx}`,
-          shippingBillId: '',
+          id: itm.id || generateUUID(),
+          shippingBillId: shippingBillId,
           itemSrNo: itm.itemSrNo || String(idx + 1),
           itcHsCode: itm.itcHsCode,
           productDescription: itm.productDescription,
@@ -660,8 +665,8 @@ export const ExportsPage: React.FC = () => {
           fobValueInr: Number(itm.fobValueInr),
         })),
         brcTracking: {
-          id: `BRC-${Date.now()}`,
-          shippingBillId: '',
+          id: brcId,
+          shippingBillId: shippingBillId,
           brcStatus: 'Not Received',
           currency,
           realizedAmountFc: 0,

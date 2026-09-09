@@ -197,7 +197,8 @@ export type ModuleId =
   | 'utilization'
   | 'finder'
   | 'reports'
-  | 'settings';
+  | 'settings'
+  | 'guide';
 
 export interface NavigationItem {
   id: ModuleId;
@@ -903,6 +904,215 @@ export interface LicenceFinderHistoryItem {
   finalLicenceUsedId?: string;
   createdAt?: string;
 }
+
+// ============================================================================
+// REPORTS & SETTINGS MODULE TYPES
+// ============================================================================
+
+export interface SystemSetting {
+  id: string;
+  settingKey: string;
+  settingValue: any;
+  description?: string;
+  category: 'forex' | 'company' | 'alerts' | 'fiscal';
+  isEditable: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ExchangeRateSetting {
+  id: string;
+  currency: string;
+  currencyName: string;
+  importRateInr: number;
+  exportRateInr: number;
+  rbiReferenceRateInr: number;
+  effectiveDate: string;
+  lastUpdatedBy: string;
+  updatedAt: string;
+}
+
+export interface SionTemplate {
+  id: string;
+  templateName: string;
+  rawMaterialName: string;
+  rawMaterialHsCode?: string;
+  finishedGoodName: string;
+  finishedGoodHsCode?: string;
+  inputQty: number;
+  inputUom: string;
+  outputQty: number;
+  outputUom: string;
+  yieldRatio: number;
+  wastagePercent: number;
+  isActive: boolean;
+  description?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface UserRole {
+  id: string;
+  roleName: string;
+  description: string;
+  userCount?: number;
+  canExport: boolean;
+  canApprove: boolean;
+  canDelete: boolean;
+  canGenerateReports: boolean;
+  canConfigureSettings: boolean;
+  modulePermissions: {
+    licences: 'read' | 'write' | 'admin' | 'none';
+    imports: 'read' | 'write' | 'admin' | 'none';
+    exports: 'read' | 'write' | 'admin' | 'none';
+    materials: 'read' | 'write' | 'admin' | 'none';
+    utilization: 'read' | 'write' | 'admin' | 'none';
+    reports: 'read' | 'write' | 'admin' | 'none';
+    settings: 'read' | 'write' | 'admin' | 'none';
+  };
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actionType: 'CREATE' | 'UPDATE' | 'DELETE' | 'VIEW' | 'APPROVE' | 'EXPORT';
+  moduleName: string;
+  recordType: string;
+  recordId: string;
+  recordRef?: string;
+  oldValues?: any;
+  newValues?: any;
+  userId: string;
+  userName: string;
+  userRole?: string;
+  ipAddress?: string;
+  status: 'success' | 'failure' | 'warning';
+  details?: string;
+  createdAt: string;
+}
+
+export interface ReportCache {
+  id: string;
+  reportType: 'expiry-tracking' | 'utilization-summary' | 'sion-variance' | 'audit-trail';
+  reportName: string;
+  filters: any;
+  reportData: any;
+  generatedBy: string;
+  generatedAt: string;
+  expiresAt?: string;
+  isExported?: boolean;
+  exportedFormat?: 'pdf' | 'csv' | 'xlsx';
+}
+
+export interface ExpiryTrackingReportItem {
+  licenceId: string;
+  licenceNumber: string;
+  fileNumber: string;
+  issueDate: string;
+  importValidityDate: string;
+  exportValidityDate: string;
+  daysRemainingImport: number;
+  daysRemainingExport: number;
+  status: 'Active' | 'Expiring Soon' | 'Expired' | 'Pending Closure';
+  riskLevel: 'Low' | 'Medium' | 'High' | 'Critical';
+  sanctionedFobInr: number;
+  utilizedFobInr: number;
+  utilizationPercent: number;
+  recommendation: string;
+}
+
+export interface ExpiryTrackingReport {
+  generatedAt: string;
+  generatedBy: string;
+  summary: {
+    totalLicences: number;
+    expiringWithin30Days: number;
+    expiringWithin90Days: number;
+    expiredCount: number;
+    criticalRiskCount: number;
+  };
+  items: ExpiryTrackingReportItem[];
+}
+
+export interface UtilizationSummaryReportItem {
+  licenceId: string;
+  licenceNumber: string;
+  fileNumber: string;
+  authorizedFobInr: number;
+  utilizedFobInr: number;
+  utilizationPercent: number;
+  statusCategory: 'Under-Utilized' | 'Well-Utilized' | 'Over-Utilized' | 'Closed';
+  importedCifInr: number;
+  exportedFobInr: number;
+  cifFobBalanceInr: number;
+  remainingFobInr: number;
+  trend: 'Increasing' | 'Stable' | 'Decreasing';
+  daysToExpiry: number;
+}
+
+export interface UtilizationSummaryReport {
+  generatedAt: string;
+  generatedBy: string;
+  summary: {
+    totalAuthorizedFobInr: number;
+    totalUtilizedFobInr: number;
+    overallUtilizationPercent: number;
+    wellUtilizedCount: number;
+    underUtilizedCount: number;
+    overUtilizedCount: number;
+    avgUtilizationPercent: number;
+  };
+  items: UtilizationSummaryReportItem[];
+}
+
+export interface SionVarianceReportItem {
+  id: string;
+  licenceNumber: string;
+  rawMaterialName: string;
+  finishedGoodName: string;
+  sionNormRef: string;
+  rawMaterialConsumedQty: number;
+  rawMaterialUom: string;
+  expectedOutputQty: number;
+  actualOutputQty: number;
+  finishedGoodUom: string;
+  varianceQty: number;
+  variancePercent: number;
+  expectedWastagePercent: number;
+  actualWastagePercent: number;
+  statusIndicator: 'Normal' | 'Variance' | 'High Variance';
+  estimatedCostOfVarianceInr: number;
+}
+
+export interface SionVarianceReport {
+  generatedAt: string;
+  generatedBy: string;
+  summary: {
+    totalRecordsAnalyzed: number;
+    normalVarianceCount: number;
+    highVarianceCount: number;
+    totalWastageAmountInr: number;
+    avgVariancePercent: number;
+  };
+  items: SionVarianceReportItem[];
+}
+
+export interface AuditTrailReport {
+  generatedAt: string;
+  generatedBy: string;
+  summary: {
+    totalRecords: number;
+    createCount: number;
+    updateCount: number;
+    deleteCount: number;
+    approvalCount: number;
+    uniqueUsersCount: number;
+    successRatePercent: number;
+  };
+  items: AuditLogEntry[];
+}
+
 
 
 

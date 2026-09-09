@@ -10,7 +10,8 @@ import {
   BarChart3, 
   Settings, 
   Building2,
-  ShieldCheck
+  ShieldCheck,
+  BookOpen
 } from 'lucide-react';
 import { ModuleId } from '../types';
 import { NAVIGATION_ITEMS } from '../data/navigation';
@@ -30,17 +31,20 @@ const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
   PieChart,
   Search,
   BarChart3,
-  Settings
+  Settings,
+  BookOpen
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentModule, onSelectModule }) => {
   return (
     <aside className="w-72 bg-slate-900 text-slate-100 flex flex-col h-screen border-r border-slate-800 flex-shrink-0 select-none">
       {/* Brand Header */}
-      <div className="p-5 border-b border-slate-800 flex items-center gap-3 bg-slate-950/50">
-        <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white shadow-sm ring-1 ring-blue-500/50">
-          AL
-        </div>
+      <div className="p-5 border-b border-slate-800 flex flex-col items-start gap-3 bg-slate-950/50">
+        <img 
+          src="/Alok-Color.png" 
+          alt="Alok Industries" 
+          className="h-12 w-auto object-contain object-left"
+        />
         <div>
           <div className="flex items-center gap-2">
             <h1 className="font-semibold text-sm tracking-tight text-white">ALOK INDUSTRIES</h1>

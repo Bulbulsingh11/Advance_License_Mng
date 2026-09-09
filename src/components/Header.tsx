@@ -2,6 +2,8 @@ import React from 'react';
 import { Search, Bell, Shield, Building, User } from 'lucide-react';
 import { ModuleId } from '../types';
 import { NAVIGATION_ITEMS, DEFAULT_USER } from '../data/navigation';
+import { useAuth } from '../contexts/AuthContext';
+import { LogOut } from 'lucide-react';
 
 interface HeaderProps {
   currentModule: ModuleId;
@@ -9,6 +11,11 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ currentModule }) => {
   const currentNavItem = NAVIGATION_ITEMS.find(item => item.id === currentModule) || NAVIGATION_ITEMS[0];
+  const { profile, user, signOut } = useAuth();
+  const userName = profile?.email?.split('@')[0] || user?.email?.split('@')[0] || DEFAULT_USER.name;
+  const userRole = profile?.role || DEFAULT_USER.role;
+  const avatarInitials = userName.substring(0, 2).toUpperCase();
+  const unit = profile?.unit || 'Unit: Silvassa & Mumbai HQ';
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between flex-shrink-0 z-10 shadow-xs">
@@ -48,7 +55,7 @@ export const Header: React.FC<HeaderProps> = ({ currentModule }) => {
         {/* Plant / Unit Selector Badge */}
         <div className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700">
           <Building className="w-3.5 h-3.5 text-blue-600" />
-          <span className="font-medium">Unit: Silvassa & Mumbai HQ</span>
+          <span className="font-medium">{unit}</span>
         </div>
 
         {/* Notifications */}
@@ -66,15 +73,20 @@ export const Header: React.FC<HeaderProps> = ({ currentModule }) => {
         {/* User Profile */}
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-700 font-semibold flex items-center justify-center text-sm border border-blue-200">
-            {DEFAULT_USER.avatarInitials}
+            {avatarInitials}
           </div>
+          
           <div className="hidden sm:block text-left">
             <div className="text-xs font-semibold text-slate-900 flex items-center gap-1">
-              {DEFAULT_USER.name}
-              <Shield className="w-3 h-3 text-emerald-600 fill-emerald-100" title="Verified Officer" />
+              {userName}
+              {userRole === 'Admin' && <Shield className="w-3 h-3 text-emerald-600 fill-emerald-100" title="Verified Officer" />}
             </div>
-            <div className="text-[11px] text-slate-500">{DEFAULT_USER.role}</div>
+            <div className="text-[11px] text-slate-500">{userRole}</div>
           </div>
+          <button onClick={signOut} className="ml-2 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md" title="Sign Out">
+            <LogOut className="w-4 h-4" />
+          </button>
+
         </div>
       </div>
     </header>

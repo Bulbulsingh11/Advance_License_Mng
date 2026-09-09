@@ -18,6 +18,18 @@ import {
 import { AdvanceLicence, ShippingBill, CurrencyCode, BrcStatus } from '../types';
 import { saveShippingBillsBulkToDB } from '../lib/supabase';
 
+// Utility function to generate proper UUIDs
+const generateUUID = (): string => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 interface ExportExcelUploaderModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -397,60 +409,66 @@ export const ExportExcelUploaderModal: React.FC<ExportExcelUploaderModalProps> =
 
     setIsImporting(true);
     try {
-      const payload: Partial<ShippingBill>[] = parsedRows.map((row, idx) => ({
-        id: `SB-IMP-${Date.now()}-${idx}`,
-        licenceId: row.licenceId,
-        licenceNumber: row.licenceNumber,
-        companyFileNumber: row.companyFileNumber,
-        shippingBillNumber: row.shippingBillNumber,
-        shippingBillDate: row.shippingBillDate,
-        portOfExport: row.portOfExport,
-        portCode: row.portCode,
-        destinationCountry: row.destinationCountry,
-        buyerName: row.buyerName,
-        invoiceNumber: row.invoiceNumber,
-        invoiceDate: row.invoiceDate,
-        currency: row.currency,
-        exchangeRate: row.exchangeRate,
-        totalFobFc: row.totalFobFc,
-        totalFobInr: row.totalFobInr,
-        status: row.status,
-        remarks: row.remarks,
-        items: [
-          {
-            id: `itm-${Date.now()}-${idx}`,
-            shippingBillId: '',
-            itemSrNo: '1',
-            itcHsCode: row.itcHsCode,
-            productDescription: row.productDescription,
-            quantity: row.quantity,
-            uom: row.uom,
-            fobValueCurrency: row.currency,
-            fobValueFc: row.totalFobFc,
-            exchangeRate: row.exchangeRate,
-            fobValueInr: row.totalFobInr,
-            notes: row.remarks,
-          }
-        ],
-        brcTracking: {
-          id: `BRC-IMP-${Date.now()}-${idx}`,
-          shippingBillId: '',
-          brcNumber: row.brcNumber,
-          brcStatus: row.brcStatus,
-          receivedDate: row.brcStatus !== 'Not Received' ? row.realizedDate : undefined,
-          realizedDate: row.brcStatus === 'Realized' ? row.realizedDate : undefined,
+      const payload: Partial<ShippingBill>[] = parsedRows.map((row) => {
+        const shippingBillId = generateUUID();
+        const itemId = generateUUID();
+        const brcId = generateUUID();
+
+        return {
+          id: shippingBillId,
+          licenceId: row.licenceId,
+          licenceNumber: row.licenceNumber,
+          companyFileNumber: row.companyFileNumber,
+          shippingBillNumber: row.shippingBillNumber,
+          shippingBillDate: row.shippingBillDate,
+          portOfExport: row.portOfExport,
+          portCode: row.portCode,
+          destinationCountry: row.destinationCountry,
+          buyerName: row.buyerName,
+          invoiceNumber: row.invoiceNumber,
+          invoiceDate: row.invoiceDate,
           currency: row.currency,
-          realizedAmountFc: row.realizedAmountFc,
-          realizedExchangeRate: row.exchangeRate,
-          realizedAmountInr: row.realizedAmountInr,
-          bankName: row.bankName,
-          bankBranch: 'Corporate Accounts Group, Mumbai',
-          ifscCode: 'SBIN0009999',
-          adCode: row.adCode,
-          eBrcDocumentNumber: row.eBrcDocumentNumber,
+          exchangeRate: row.exchangeRate,
+          totalFobFc: row.totalFobFc,
+          totalFobInr: row.totalFobInr,
+          status: row.status,
           remarks: row.remarks,
-        }
-      }));
+          items: [
+            {
+              id: itemId,
+              shippingBillId: shippingBillId,
+              itemSrNo: '1',
+              itcHsCode: row.itcHsCode,
+              productDescription: row.productDescription,
+              quantity: row.quantity,
+              uom: row.uom,
+              fobValueCurrency: row.currency,
+              fobValueFc: row.totalFobFc,
+              exchangeRate: row.exchangeRate,
+              fobValueInr: row.totalFobInr,
+              notes: row.remarks,
+            }
+          ],
+          brcTracking: {
+            id: brcId,
+            shippingBillId: shippingBillId,
+            brcNumber: row.brcNumber,
+            brcStatus: row.brcStatus,
+            receivedDate: row.brcStatus !== 'Not Received' ? row.realizedDate : undefined,
+            realizedDate: row.brcStatus === 'Realized' ? row.realizedDate : undefined,
+            currency: row.currency,
+            realizedAmountFc: row.realizedAmountFc,
+            realizedExchangeRate: row.exchangeRate,
+            realizedAmountInr: row.realizedAmountInr,
+            bankName: row.bankName,
+            bankBranch: 'Corporate Accounts Group, Mumbai',
+            ifscCode: 'SBIN0009999',
+            adCode: row.adCode,
+            eBrcDocumentNumber: row.eBrcDocumentNumber,
+            remarks: row.remarks,
+          }
+        };
+      });
 
       const res = await saveShippingBillsBulkToDB(payload);
       

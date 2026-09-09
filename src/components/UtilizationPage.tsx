@@ -31,7 +31,8 @@ import {
   AlertOctagon,
   HelpCircle,
   BarChart2,
-  Zap
+  Zap,
+  Terminal
 } from 'lucide-react';
 import {
   UtilizationMetrics,
@@ -49,7 +50,8 @@ import {
   fetchLicenceUtilizationHistory,
   triggerUtilizationSnapshotRecalculation,
   resolveUtilizationAlert,
-  simulateUtilizationScenario
+  simulateUtilizationScenario,
+  fetchSqlAudit
 } from '../lib/supabase';
 
 interface UtilizationPageProps {
@@ -98,6 +100,21 @@ export const UtilizationPage: React.FC<UtilizationPageProps> = ({ onNavigate }) 
 
   // Toast Notification
   const [toastMessage, setToastMessage] = useState<{ title: string; desc: string; type: 'success' | 'info' | 'error' } | null>(null);
+
+  // SQL Audit Modal State
+  const [sqlAuditModalOpen, setSqlAuditModalOpen] = useState<boolean>(false);
+  const [sqlAuditData, setSqlAuditData] = useState<any>(null);
+  const [sqlAuditLoading, setSqlAuditLoading] = useState<boolean>(false);
+
+  const handleOpenSqlAudit = async () => {
+    setSqlAuditModalOpen(true);
+    if (!sqlAuditData) {
+      setSqlAuditLoading(true);
+      const res = await fetchSqlAudit();
+      if (res) setSqlAuditData(res);
+      setSqlAuditLoading(false);
+    }
+  };
 
   const showToast = (title: string, desc: string, type: 'success' | 'info' | 'error' = 'info') => {
     setToastMessage({ title, desc, type });
@@ -516,6 +533,15 @@ export const UtilizationPage: React.FC<UtilizationPageProps> = ({ onNavigate }) 
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-blue-600' : 'text-slate-500'}`} />
             {refreshing ? 'Syncing...' : 'Recalculate Snapshots'}
+          </button>
+
+          <button
+            onClick={handleOpenSqlAudit}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors"
+            title="Inspect SQL aggregation queries and manual sample calculation"
+          >
+            <Terminal className="w-3.5 h-3.5 text-blue-600" />
+            SQL & Sample Audit
           </button>
 
           <button
@@ -1778,6 +1804,111 @@ export const UtilizationPage: React.FC<UtilizationPageProps> = ({ onNavigate }) 
               >
                 <Check className="w-3.5 h-3.5" />
                 {resolvingAlert ? 'Saving...' : 'Mark as Resolved'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SQL & Sample Audit Modal */}
+      {sqlAuditModalOpen && (
+        <div className="fixed inset-0 z-60 overflow-hidden bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
+            <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">SQL Aggregation Audit & Sample Calculation</h3>
+              </div>
+              <button
+                onClick={() => setSqlAuditModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5 text-xs text-slate-700">
+              {sqlAuditLoading ? (
+                <div className="py-12 text-center text-slate-500 flex flex-col items-center justify-center gap-2">
+                  <RefreshCw className="w-6 h-6 animate-spin text-blue-600" />
+                  <p>Loading SQL queries and sample calculation audit...</p>
+                </div>
+              ) : sqlAuditData ? (
+                <>
+                  <div className="space-y-2">
+                    <h4 className="font-bold text-slate-900 text-sm">1. Core SQL Aggregation Queries</h4>
+                    <p className="text-slate-600">
+                      The utilization dashboard and obligation tracking engine executes the following PostgreSQL aggregates against <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-800">shipping_bills</code>, <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-800">import_documents</code>, and <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-800">licence_master</code>:
+                    </p>
+
+                    <div className="space-y-3 mt-3">
+                      <div className="bg-slate-900 text-slate-100 p-3.5 rounded-xl font-mono text-[11px] overflow-x-auto shadow-xs">
+                        <span className="text-emerald-400 font-bold block mb-1">-- Total Exported FOB per Licence</span>
+                        {sqlAuditData.queries.totalExportedFobSql}
+                      </div>
+
+                      <div className="bg-slate-900 text-slate-100 p-3.5 rounded-xl font-mono text-[11px] overflow-x-auto shadow-xs">
+                        <span className="text-emerald-400 font-bold block mb-1">-- Total Imported CIF per Licence</span>
+                        {sqlAuditData.queries.totalImportedCifSql}
+                      </div>
+
+                      <div className="bg-slate-900 text-slate-100 p-3.5 rounded-xl font-mono text-[11px] overflow-x-auto shadow-xs">
+                        <span className="text-emerald-400 font-bold block mb-1">-- Utilization Percentage & Obligation Status</span>
+                        {sqlAuditData.queries.utilizationPercentSql}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-2 border-t border-slate-200">
+                    <h4 className="font-bold text-slate-900 text-sm">2. Manual Sample Calculation Verification</h4>
+                    <p className="text-slate-600">
+                      Below is a sample verification check for Advance Licence <span className="font-bold font-mono text-slate-900">{sqlAuditData.sampleCalculation.licenceNumber}</span>:
+                    </p>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 font-medium">
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase font-bold">Export Obligation Authorized Target (FOB)</span>
+                        <span className="text-slate-900 font-bold text-sm">₹{Number(sqlAuditData.sampleCalculation.exportObligationValueInr).toLocaleString()}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase font-bold">Realized Export Shipped (FOB)</span>
+                        <span className="text-emerald-700 font-bold text-sm">₹{Number(sqlAuditData.sampleCalculation.realizedExportFobInr).toLocaleString()}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase font-bold">Import Entitlement Authorized (CIF)</span>
+                        <span className="text-slate-900 font-bold text-sm">₹{Number(sqlAuditData.sampleCalculation.importLicenceValueInr).toLocaleString()}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase font-bold">Total Imported B/E (CIF)</span>
+                        <span className="text-blue-700 font-bold text-sm">₹{Number(sqlAuditData.sampleCalculation.totalImportedCifInr).toLocaleString()}</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 bg-emerald-50 rounded-xl border border-emerald-200 space-y-1 text-emerald-900">
+                      <div className="font-bold flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        Verification Formulas & Results
+                      </div>
+                      <p className="font-mono text-[11px] text-emerald-800">
+                        • Utilization % = {sqlAuditData.sampleCalculation.formula.utilizationPercent}
+                      </p>
+                      <p className="font-mono text-[11px] text-emerald-800">
+                        • Remaining Import Entitlement = {sqlAuditData.sampleCalculation.formula.remainingImportEntitlement} (₹{Number(sqlAuditData.sampleCalculation.remainingImportEntitlementInr).toLocaleString()})
+                      </p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="py-8 text-center text-slate-500">Failed to load SQL audit information.</div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2 text-xs">
+              <button
+                onClick={() => setSqlAuditModalOpen(false)}
+                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold shadow-xs"
+              >
+                Close Audit Modal
               </button>
             </div>
           </div>

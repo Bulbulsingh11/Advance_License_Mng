@@ -13,17 +13,42 @@ import {
 // Local storage key for fallback cache
 const STORAGE_KEY = 'alok_advance_licences_master_v1';
 
+// Utility function to generate proper UUIDs
+export const generateUUID = (): string => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 let clientSupabaseInstance: SupabaseClient | null = null;
 
 // Helper to filter out any mock/placeholder records
 export const isMockRecord = (lic: Partial<AdvanceLicence>): boolean => {
-  const mockIds = ['AL-2026-001', 'AL-2026-002', 'AL-2026-003', 'AL-2026-004'];
-  const mockLicenceNumbers = ['0310789456', '0310654321', '0310998877', '0310451239'];
+  const mockIds = [
+    'AL-2026-001', 'AL-2026-002', 'AL-2026-003', 'AL-2026-004',
+    'lic-101', 'lic-102', 'lic-103', 'lic-104', 'lic-105', 'lic-106', 'lic-107'
+  ];
+  const mockLicenceNumbers = [
+    '0310789456', '0310654321', '0310998877', '0310451239',
+    '0310293847', '0310298811', '0310287712', '0310312900', '0310328844', '0310271109', '0310349910'
+  ];
   const mockFileNumbers = [
     'ECA/SIL/03/2025/00142',
     'ECA/MUM/05/2024/00891',
     'ECA/VAPI/02/2026/00045',
     'ECA/SIL/03/2023/00912',
+    '03/24/040/00123/AM24',
+    '03/24/040/00456/AM24',
+    '03/23/040/00882/AM23',
+    '03/24/040/01002/AM25',
+    '03/25/040/00015/AM25',
+    '03/23/040/00344/AM23',
+    '03/25/040/00812/AM25'
   ];
 
   if (lic.id && mockIds.includes(lic.id)) return true;
@@ -34,6 +59,19 @@ export const isMockRecord = (lic: Partial<AdvanceLicence>): boolean => {
 };
 
 // Optional direct client (using public anon key only)
+
+export const fetchAuth = async (url: string, options: RequestInit = {}) => {
+  const sb = getSupabase();
+  const headers = new Headers(options.headers || {});
+  if (sb) {
+    const { data } = await sb.auth.getSession();
+    if (data?.session?.access_token) {
+      headers.set('Authorization', `Bearer ${data.session.access_token}`);
+    }
+  }
+  return fetch(url, { ...options, headers });
+};
+
 export const getSupabase = (): SupabaseClient | null => {
   const url = import.meta.env.VITE_SUPABASE_URL;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -92,7 +130,7 @@ export interface DatabaseStatusResponse {
  */
 export const checkDatabaseStatus = async (): Promise<DatabaseStatusResponse> => {
   try {
-    const res = await fetch('/api/database/status');
+    const res = await fetchAuth('/api/database/status');
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       return {
@@ -119,7 +157,7 @@ export const checkDatabaseStatus = async (): Promise<DatabaseStatusResponse> => 
  */
 export const fetchLicencesFromDB = async (): Promise<{ licences: AdvanceLicence[]; source: string; isDb: boolean; hint?: string }> => {
   try {
-    const res = await fetch('/api/licences');
+    const res = await fetchAuth('/api/licences');
     if (res.ok) {
       const data = await res.json();
       if (data && Array.isArray(data.data)) {
@@ -148,7 +186,7 @@ export const fetchLicencesFromDB = async (): Promise<{ licences: AdvanceLicence[
  */
 export const getLicenceFromDB = async (id: string): Promise<AdvanceLicence | null> => {
   try {
-    const res = await fetch(`/api/licences/${id}`);
+    const res = await fetchAuth(`/api/licences/${id}`);
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.data) {
@@ -167,7 +205,7 @@ export const getLicenceFromDB = async (id: string): Promise<AdvanceLicence | nul
  */
 export const saveLicenceToDB = async (licence: AdvanceLicence): Promise<AdvanceLicence> => {
   try {
-    const res = await fetch('/api/licences', {
+    const res = await fetchAuth('/api/licences', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -202,7 +240,7 @@ export const saveLicenceToDB = async (licence: AdvanceLicence): Promise<AdvanceL
  */
 export const updateLicenceInDB = async (licence: AdvanceLicence): Promise<AdvanceLicence> => {
   try {
-    const res = await fetch(`/api/licences/${licence.id}`, {
+    const res = await fetchAuth(`/api/licences/${licence.id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -236,7 +274,7 @@ export const updateLicenceInDB = async (licence: AdvanceLicence): Promise<Advanc
  */
 export const deleteLicenceFromDB = async (id: string): Promise<boolean> => {
   try {
-    await fetch(`/api/licences/${id}`, {
+    await fetchAuth(`/api/licences/${id}`, {
       method: 'DELETE',
       headers: {
         Accept: 'application/json',
@@ -324,7 +362,7 @@ export const fetchShippingBillsFromDB = async (
     const queryString = queryParams.toString();
     const url = queryString ? `/api/shipping-bills?${queryString}` : '/api/shipping-bills';
 
-    const res = await fetch(url);
+    const res = await fetchAuth(url);
     if (res.ok) {
       const data = await res.json();
       if (data && Array.isArray(data.data)) {
@@ -366,62 +404,30 @@ export const fetchShippingBillsFromDB = async (
  * Save a new Shipping Bill with line items & initial BRC record
  */
 export const saveShippingBillToDB = async (bill: Partial<ShippingBill>): Promise<ShippingBill> => {
-  try {
-    const res = await fetch('/api/shipping-bills', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(bill),
-    });
+  const res = await fetchAuth('/api/shipping-bills', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(bill),
+  });
 
-    if (res.ok) {
-      const result = await res.json();
-      if (result.success && result.data) {
-        const saved = result.data as ShippingBill;
-        const current = getLocalShippingBills();
-        const next = [saved, ...current.filter((b) => b.id !== saved.id)];
-        syncLocalShippingBills(next);
-        return saved;
-      }
-    }
-  } catch (err) {
-    console.warn('API save shipping bill error:', err);
+  const result = await res.json().catch(() => ({}));
+
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || `Failed to save Shipping Bill (HTTP ${res.status})`);
   }
 
-  // Local fallback object
-  const newBill: ShippingBill = {
-    id: bill.id || `SB-${Date.now()}`,
-    licenceId: bill.licenceId || '',
-    licenceNumber: bill.licenceNumber || '',
-    companyFileNumber: bill.companyFileNumber || '',
-    shippingBillNumber: bill.shippingBillNumber || '',
-    shippingBillDate: bill.shippingBillDate || new Date().toISOString().split('T')[0],
-    portOfExport: bill.portOfExport || 'INNSA1 - Nhava Sheva',
-    destinationCountry: bill.destinationCountry || '',
-    buyerName: bill.buyerName || '',
-    currency: bill.currency || 'USD',
-    exchangeRate: Number(bill.exchangeRate) || 83.5,
-    totalFobFc: Number(bill.totalFobFc) || 0,
-    totalFobInr: Number(bill.totalFobInr) || 0,
-    status: bill.status || 'Exported',
-    items: bill.items || [],
-    brcTracking: bill.brcTracking || {
-      id: `BRC-${Date.now()}`,
-      shippingBillId: bill.id || `SB-${Date.now()}`,
-      brcStatus: 'Not Received',
-      currency: bill.currency || 'USD',
-      realizedAmountFc: 0,
-      realizedAmountInr: 0,
-    },
-    createdAt: new Date().toISOString(),
-  };
+  if (result.data) {
+    const saved = result.data as ShippingBill;
+    const current = getLocalShippingBills();
+    const next = [saved, ...current.filter((b) => b.id !== saved.id)];
+    syncLocalShippingBills(next);
+    return saved;
+  }
 
-  const current = getLocalShippingBills();
-  const next = [newBill, ...current.filter((b) => b.id !== newBill.id)];
-  syncLocalShippingBills(next);
-  return newBill;
+  throw new Error("Invalid server response format");
 };
 
 /**
@@ -429,7 +435,7 @@ export const saveShippingBillToDB = async (bill: Partial<ShippingBill>): Promise
  */
 export const saveShippingBillsBulkToDB = async (bills: Partial<ShippingBill>[]): Promise<{ count: number; bills: ShippingBill[]; source: string }> => {
   try {
-    const res = await fetch('/api/shipping-bills/bulk', {
+    const res = await fetchAuth('/api/shipping-bills/bulk', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -455,32 +461,35 @@ export const saveShippingBillsBulkToDB = async (bills: Partial<ShippingBill>[]):
 
   // Fallback to local
   const current = getLocalShippingBills();
-  const localSaved: ShippingBill[] = bills.map((bill, i) => ({
-    id: bill.id || `SB-${Date.now()}-${i}`,
-    licenceId: bill.licenceId || '',
-    licenceNumber: bill.licenceNumber || '',
-    companyFileNumber: bill.companyFileNumber || '',
-    shippingBillNumber: bill.shippingBillNumber || `SB-${Date.now()}-${i}`,
-    shippingBillDate: bill.shippingBillDate || new Date().toISOString().split('T')[0],
-    portOfExport: bill.portOfExport || 'INNSA1 - Nhava Sheva',
-    destinationCountry: bill.destinationCountry || 'United States',
-    buyerName: bill.buyerName || '',
-    currency: bill.currency || 'USD',
-    exchangeRate: Number(bill.exchangeRate) || 83.5,
-    totalFobFc: Number(bill.totalFobFc) || 0,
-    totalFobInr: Number(bill.totalFobInr) || 0,
-    status: bill.status || 'Exported',
-    items: bill.items || [],
-    brcTracking: bill.brcTracking || {
-      id: `BRC-${Date.now()}-${i}`,
-      shippingBillId: bill.id || `SB-${Date.now()}-${i}`,
-      brcStatus: 'Not Received',
+  const localSaved: ShippingBill[] = bills.map((bill, i) => {
+    const billId = bill.id || generateUUID();
+    return {
+      id: billId,
+      licenceId: bill.licenceId || '',
+      licenceNumber: bill.licenceNumber || '',
+      companyFileNumber: bill.companyFileNumber || '',
+      shippingBillNumber: bill.shippingBillNumber || `SB-${Date.now()}-${i}`,
+      shippingBillDate: bill.shippingBillDate || new Date().toISOString().split('T')[0],
+      portOfExport: bill.portOfExport || 'INNSA1 - Nhava Sheva',
+      destinationCountry: bill.destinationCountry || 'United States',
+      buyerName: bill.buyerName || '',
       currency: bill.currency || 'USD',
-      realizedAmountFc: 0,
-      realizedAmountInr: 0,
-    },
-    createdAt: new Date().toISOString(),
-  }));
+      exchangeRate: Number(bill.exchangeRate) || 83.5,
+      totalFobFc: Number(bill.totalFobFc) || 0,
+      totalFobInr: Number(bill.totalFobInr) || 0,
+      status: bill.status || 'Exported',
+      items: bill.items || [],
+      brcTracking: bill.brcTracking || {
+        id: generateUUID(),
+        shippingBillId: billId,
+        brcStatus: 'Not Received',
+        currency: bill.currency || 'USD',
+        realizedAmountFc: 0,
+        realizedAmountInr: 0,
+      },
+      createdAt: new Date().toISOString(),
+    };
+  });
 
   const savedIds = new Set(localSaved.map((b) => b.id));
   const next = [...localSaved, ...current.filter((b) => !savedIds.has(b.id))];
@@ -493,7 +502,7 @@ export const saveShippingBillsBulkToDB = async (bills: Partial<ShippingBill>[]):
  */
 export const updateShippingBillInDB = async (bill: ShippingBill): Promise<ShippingBill> => {
   try {
-    const res = await fetch(`/api/shipping-bills/${bill.id}`, {
+    const res = await fetchAuth(`/api/shipping-bills/${bill.id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -527,7 +536,7 @@ export const updateShippingBillInDB = async (bill: ShippingBill): Promise<Shippi
  */
 export const deleteShippingBillFromDB = async (id: string): Promise<boolean> => {
   try {
-    await fetch(`/api/shipping-bills/${id}`, {
+    await fetchAuth(`/api/shipping-bills/${id}`, {
       method: 'DELETE',
       headers: {
         Accept: 'application/json',
@@ -548,7 +557,7 @@ export const deleteShippingBillFromDB = async (id: string): Promise<boolean> => 
  */
 export const updateBrcTrackingInDB = async (shippingBillId: string, brc: Partial<BrcTracking>): Promise<BrcTracking> => {
   try {
-    const res = await fetch(`/api/shipping-bills/${shippingBillId}/brc-tracking`, {
+    const res = await fetchAuth(`/api/shipping-bills/${shippingBillId}/brc-tracking`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -572,7 +581,7 @@ export const updateBrcTrackingInDB = async (shippingBillId: string, brc: Partial
   const target = bills.find((b) => b.id === shippingBillId);
   if (target) {
     target.brcTracking = {
-      ...(target.brcTracking || { id: `BRC-${Date.now()}`, shippingBillId, currency: 'USD', brcStatus: 'Not Received' }),
+      ...(target.brcTracking || { id: generateUUID(), shippingBillId, currency: 'USD', brcStatus: 'Not Received' }),
       ...brc,
     } as BrcTracking;
     syncLocalShippingBills(bills);
@@ -587,7 +596,7 @@ export const updateBrcTrackingInDB = async (shippingBillId: string, brc: Partial
  */
 export const fetchExportObligationStatus = async (licenceId: string): Promise<ExportObligationTracking | null> => {
   try {
-    const res = await fetch(`/api/licences/${licenceId}/export-obligation`);
+    const res = await fetchAuth(`/api/licences/${licenceId}/export-obligation`);
     if (res.ok) {
       const result = await res.json();
       if (result.success && result.data) {
@@ -603,6 +612,19 @@ export const fetchExportObligationStatus = async (licenceId: string): Promise<Ex
 // ============================================================================
 // PHASE 4: UTILIZATION DASHBOARD & ALERTS API CALLS
 // ============================================================================
+
+export const fetchSqlAudit = async () => {
+  try {
+    const res = await fetchAuth('/api/utilization/sql-audit', { headers: { Accept: 'application/json' } });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success) return json;
+    }
+  } catch (err) {
+    console.warn('[fetchSqlAudit] Error:', err);
+  }
+  return null;
+};
 
 /**
  * Fetch Utilization Dashboard summary and paginated metrics
@@ -622,7 +644,7 @@ export const fetchUtilizationDashboard = async (
 
   try {
     const url = `/api/utilization/dashboard${query.toString() ? `?${query.toString()}` : ''}`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    const res = await fetchAuth(url, { headers: { Accept: 'application/json' } });
     if (res.ok) {
       const json = await res.json();
       if (json.success) {
@@ -707,7 +729,7 @@ export const fetchUtilizationDashboard = async (
  */
 export const fetchLicenceUtilization = async (licenceId: string): Promise<UtilizationMetrics | null> => {
   try {
-    const res = await fetch(`/api/utilization/licences/${licenceId}`);
+    const res = await fetchAuth(`/api/utilization/licences/${licenceId}`);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -728,7 +750,7 @@ export const fetchLicenceUtilizationHistory = async (
   days = 90
 ): Promise<UtilizationSnapshot[]> => {
   try {
-    const res = await fetch(`/api/utilization/licences/${licenceId}/history?days=${days}`);
+    const res = await fetchAuth(`/api/utilization/licences/${licenceId}/history?days=${days}`);
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
@@ -746,7 +768,7 @@ export const fetchLicenceUtilizationHistory = async (
  */
 export const triggerUtilizationSnapshotRecalculation = async () => {
   try {
-    const res = await fetch('/api/utilization/snapshots', {
+    const res = await fetchAuth('/api/utilization/snapshots', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
@@ -768,7 +790,7 @@ export const resolveUtilizationAlert = async (
   resolutionNotes?: string
 ): Promise<boolean> => {
   try {
-    const res = await fetch(`/api/utilization/alerts/${alertId}`, {
+    const res = await fetchAuth(`/api/utilization/alerts/${alertId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status, resolutionNotes }),
@@ -789,7 +811,7 @@ export const simulateUtilizationScenario = async (
   hypotheticalMonthlyRate?: number
 ): Promise<SimulationResult | null> => {
   try {
-    const res = await fetch('/api/utilization/simulate', {
+    const res = await fetchAuth('/api/utilization/simulate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ licenceId, additionalFOB, hypotheticalMonthlyRate }),
@@ -825,7 +847,7 @@ import type {
  */
 export const fetchSionNorms = async (): Promise<any[]> => {
   try {
-    const res = await fetch('/api/sion-norms');
+    const res = await fetchAuth('/api/sion-norms');
     if (res.ok) {
       const json = await res.json();
       return json.data || [];
@@ -879,7 +901,7 @@ export const fetchImportDocuments = async (
     }
 
     const url = `/api/import-documents${query.toString() ? `?${query.toString()}` : ''}`;
-    const res = await fetch(url);
+    const res = await fetchAuth(url);
     if (res.ok) {
       const data = await res.json();
       return data;
@@ -910,7 +932,7 @@ export const fetchImportDocumentById = async (
   id: string
 ): Promise<ImportDocument | null> => {
   try {
-    const res = await fetch(`/api/import-documents/${id}`);
+    const res = await fetchAuth(`/api/import-documents/${id}`);
     if (res.ok) {
       const json = await res.json();
       return json.data || null;
@@ -927,7 +949,7 @@ export const fetchImportDocumentById = async (
 export const createImportDocument = async (
   doc: Partial<ImportDocument>
 ): Promise<ImportDocument> => {
-  const res = await fetch('/api/import-documents', {
+  const res = await fetchAuth('/api/import-documents', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(doc),
@@ -948,7 +970,7 @@ export const createImportDocument = async (
 export const createImportDocumentsBulk = async (
   docs: Partial<ImportDocument>[]
 ): Promise<{ success: boolean; count: number; data: ImportDocument[]; message?: string }> => {
-  const res = await fetch('/api/import-documents/bulk', {
+  const res = await fetchAuth('/api/import-documents/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ documents: docs }),
@@ -977,7 +999,7 @@ export const extractBoePdf = async (
   isFallback?: boolean;
   rawGeminiResponse?: any;
 }> => {
-  const res = await fetch('/api/extract-boe-pdf', {
+  const res = await fetchAuth('/api/extract-boe-pdf', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pdfBase64, fileName }),
@@ -998,7 +1020,7 @@ export const updateImportDocument = async (
   id: string,
   doc: Partial<ImportDocument>
 ): Promise<ImportDocument> => {
-  const res = await fetch(`/api/import-documents/${id}`, {
+  const res = await fetchAuth(`/api/import-documents/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(doc),
@@ -1017,7 +1039,7 @@ export const updateImportDocument = async (
  * Delete a Bill of Entry (cascade deletes line items, GRN, and consumption)
  */
 export const deleteImportDocument = async (id: string): Promise<boolean> => {
-  const res = await fetch(`/api/import-documents/${id}`, {
+  const res = await fetchAuth(`/api/import-documents/${id}`, {
     method: 'DELETE',
   });
 
@@ -1037,7 +1059,7 @@ export const createOrUpdateGRN = async (
   importBillId: string,
   grn: Partial<GoodsReceiptNote>
 ): Promise<GoodsReceiptNote> => {
-  const res = await fetch(`/api/import-documents/${importBillId}/grn`, {
+  const res = await fetchAuth(`/api/import-documents/${importBillId}/grn`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(grn),
@@ -1059,7 +1081,7 @@ export const logMaterialConsumption = async (
   lineItemId: string,
   consumption: Partial<ConsumptionTracking>
 ): Promise<ConsumptionTracking> => {
-  const res = await fetch(`/api/import-line-items/${lineItemId}/consumption`, {
+  const res = await fetchAuth(`/api/import-line-items/${lineItemId}/consumption`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(consumption),
@@ -1081,7 +1103,7 @@ export const deleteConsumptionRecord = async (
   lineItemId: string,
   consumptionId: string
 ): Promise<boolean> => {
-  const res = await fetch(`/api/import-line-items/${lineItemId}/consumption/${consumptionId}`, {
+  const res = await fetchAuth(`/api/import-line-items/${lineItemId}/consumption/${consumptionId}`, {
     method: 'DELETE',
   });
 
@@ -1101,7 +1123,7 @@ export const fetchLicenceImportConsumption = async (
   licenceId: string
 ): Promise<LicenceImportConsumptionStatus | null> => {
   try {
-    const res = await fetch(`/api/licences/${licenceId}/import-consumption-status`);
+    const res = await fetchAuth(`/api/licences/${licenceId}/import-consumption-status`);
     if (res.ok) {
       const json = await res.json();
       return json.data || null;
@@ -1123,7 +1145,7 @@ export const purgeAllData = async (): Promise<{ success: boolean; message: strin
     localStorage.removeItem('alok_imports_master_v1');
     localStorage.removeItem('alok_advance_licences_cache_v1');
 
-    const res = await fetch('/api/admin/purge-all-data', { method: 'POST' });
+    const res = await fetchAuth('/api/admin/purge-all-data', { method: 'POST' });
     if (res.ok) {
       return await res.json();
     }

@@ -9,11 +9,15 @@ import { ImportTransactionsPage } from './components/ImportTransactionsPage';
 import { ExportsPage } from './components/ExportsPage';
 import { UtilizationPage } from './components/UtilizationPage';
 import { LicenceFinderPage } from './components/LicenceFinderPage';
+import { PortalGuidePage } from './components/PortalGuidePage';
+import { ReportsPage } from './components/ReportsPage';
+import { SettingsPage } from './components/SettingsPage';
 import { PlaceholderPage } from './components/PlaceholderPage';
+import { AuthProvider } from './contexts/AuthContext';
 
-export default function App() {
+function MainApp() {
   const [currentModule, setCurrentModule] = useState<ModuleId>('dashboard');
-
+  
   return (
     <div className="flex h-screen bg-slate-100 text-slate-900 font-sans overflow-hidden">
       {/* Left Sidebar Navigation */}
@@ -25,7 +29,7 @@ export default function App() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden">
         <Header currentModule={currentModule} />
-
+        
         <main className="flex-1 overflow-y-auto bg-slate-100">
           {currentModule === 'dashboard' ? (
             <Dashboard onNavigate={setCurrentModule} />
@@ -41,6 +45,12 @@ export default function App() {
             <UtilizationPage onNavigate={setCurrentModule} />
           ) : currentModule === 'finder' ? (
             <LicenceFinderPage onNavigate={setCurrentModule} />
+          ) : currentModule === 'reports' ? (
+            <ReportsPage />
+          ) : currentModule === 'settings' ? (
+            <SettingsPage />
+          ) : currentModule === 'guide' ? (
+            <PortalGuidePage onNavigate={setCurrentModule} />
           ) : (
             <PlaceholderPage moduleId={currentModule} onNavigate={setCurrentModule} />
           )}
@@ -50,4 +60,10 @@ export default function App() {
   );
 }
 
-
+export default function App() {
+  return (
+    <AuthProvider>
+      <MainApp />
+    </AuthProvider>
+  );
+}

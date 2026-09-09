@@ -15,6 +15,18 @@ import {
 import { AdvanceLicence, ShippingBill, CurrencyCode, ShippingBillItem } from '../types';
 import { saveShippingBillToDB } from '../lib/supabase';
 
+// Utility function to generate proper UUIDs
+const generateUUID = (): string => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 interface ExportPdfUploaderModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -142,7 +154,7 @@ export const ExportPdfUploaderModal: React.FC<ExportPdfUploaderModalProps> = ({
           if (ext.items && Array.isArray(ext.items) && ext.items.length > 0) {
             setLineItems(
               ext.items.map((item: any, idx: number) => ({
-                id: `item-${Date.now()}-${idx}`,
+                id: generateUUID(),
                 itemSrNo: item.itemSrNo || String(idx + 1),
                 itcHsCode: item.itcHsCode || '',
                 productDescription: item.productDescription || '',
@@ -194,7 +206,7 @@ export const ExportPdfUploaderModal: React.FC<ExportPdfUploaderModalProps> = ({
     setLineItems((prev) => [
       ...prev,
       {
-        id: `item-${Date.now()}`,
+        id: generateUUID(),
         itemSrNo: String(prev.length + 1),
         itcHsCode: '52081190',
         productDescription: '',
@@ -237,8 +249,11 @@ export const ExportPdfUploaderModal: React.FC<ExportPdfUploaderModalProps> = ({
 
     setIsSaving(true);
     try {
+      const shippingBillId = generateUUID();
+      const brcId = generateUUID();
+
       const payload: Partial<ShippingBill> = {
-        id: `SB-PDF-${Date.now()}`,
+        id: shippingBillId,
         licenceId: lic.id,
         licenceNumber: lic.licenceNumber,
         companyFileNumber: lic.fileNumber,
@@ -257,8 +272,8 @@ export const ExportPdfUploaderModal: React.FC<ExportPdfUploaderModalProps> = ({
         status: 'Exported',
         remarks: `Extracted from PDF: ${selectedFile?.name || 'Shipping Bill'}`,
         items: lineItems.map((itm, idx) => ({
-          id: `item-${Date.now()}-${idx}`,
-          shippingBillId: '',
+          id: itm.id || generateUUID(),
+          shippingBillId: shippingBillId,
           itemSrNo: itm.itemSrNo || String(idx + 1),
           itcHsCode: itm.itcHsCode || '52081190',
           productDescription: itm.productDescription,
@@ -270,8 +285,8 @@ export const ExportPdfUploaderModal: React.FC<ExportPdfUploaderModalProps> = ({
           fobValueInr: Number(itm.fobValueInr),
         })),
         brcTracking: {
-          id: `BRC-${Date.now()}`,
-          shippingBillId: '',
+          id: brcId,
+          shippingBillId: shippingBillId,
           brcStatus: 'Not Received',
           currency,
           realizedAmountFc: 0,
