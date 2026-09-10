@@ -66,9 +66,9 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
 ];
 
 export const DEFAULT_USER: UserProfile = {
-  name: 'Rajesh Sharma',
+  name: 'Girman Thapa',
   role: 'Senior Export & Logistics Manager',
   department: 'Export Documentation & Compliance',
-  location: 'Alok Industries - Corporate HQ, Mumbai',
-  avatarInitials: 'RS'
+  location: 'India Delhi Okhla Phase 3',
+  avatarInitials: 'GT'
 };

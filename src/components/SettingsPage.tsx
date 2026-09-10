@@ -43,7 +43,7 @@ export const SettingsPage: React.FC = () => {
       exportRateInr: 83.45,
       rbiReferenceRateInr: 83.48,
       effectiveDate: '2026-09-01',
-      lastUpdatedBy: 'Rajesh Sharma',
+      lastUpdatedBy: 'Girman Thapa',
       updatedAt: new Date().toISOString()
     },
     {
@@ -54,7 +54,7 @@ export const SettingsPage: React.FC = () => {
       exportRateInr: 90.72,
       rbiReferenceRateInr: 90.75,
       effectiveDate: '2026-09-01',
-      lastUpdatedBy: 'Rajesh Sharma',
+      lastUpdatedBy: 'Girman Thapa',
       updatedAt: new Date().toISOString()
     },
     {
@@ -87,7 +87,7 @@ export const SettingsPage: React.FC = () => {
       exportRateInr: 22.72,
       rbiReferenceRateInr: 22.73,
       effectiveDate: '2026-09-01',
-      lastUpdatedBy: 'Rajesh Sharma',
+      lastUpdatedBy: 'Girman Thapa',
       updatedAt: new Date().toISOString()
     }
   ]);

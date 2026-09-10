@@ -12,10 +12,12 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ currentModule }) => {
   const currentNavItem = NAVIGATION_ITEMS.find(item => item.id === currentModule) || NAVIGATION_ITEMS[0];
   const { profile, user, signOut } = useAuth();
-  const userName = profile?.email?.split('@')[0] || user?.email?.split('@')[0] || DEFAULT_USER.name;
+  const userName = (profile as any)?.name || DEFAULT_USER.name;
   const userRole = profile?.role || DEFAULT_USER.role;
-  const avatarInitials = userName.substring(0, 2).toUpperCase();
-  const unit = profile?.unit || 'Unit: Silvassa & Mumbai HQ';
+  const avatarInitials = DEFAULT_USER.avatarInitials || (userName.includes(' ')
+    ? userName.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()
+    : userName.substring(0, 2).toUpperCase());
+  const unit = (profile?.unit && !profile.unit.includes('Silvassa')) ? profile.unit : 'Unit: India Delhi Okhla Phase 3';
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between flex-shrink-0 z-10 shadow-xs">

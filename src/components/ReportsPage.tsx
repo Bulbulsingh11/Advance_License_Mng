@@ -51,7 +51,7 @@ export const ReportsPage: React.FC = () => {
 
   const [expiryReport, setExpiryReport] = useState<ExpiryTrackingReport>({
     generatedAt: new Date().toISOString(),
-    generatedBy: 'Rajesh Sharma (Senior Manager)',
+    generatedBy: 'Girman Thapa (Senior Manager)',
     summary: {
       totalLicences: 0,
       expiringWithin30Days: 0,
@@ -64,7 +64,7 @@ export const ReportsPage: React.FC = () => {
 
   const [utilizationReport, setUtilizationReport] = useState<UtilizationSummaryReport>({
     generatedAt: new Date().toISOString(),
-    generatedBy: 'Rajesh Sharma (Senior Manager)',
+    generatedBy: 'Girman Thapa (Senior Manager)',
     summary: {
       totalAuthorizedFobInr: 0,
       totalUtilizedFobInr: 0,
@@ -79,7 +79,7 @@ export const ReportsPage: React.FC = () => {
 
   const [varianceReport, setVarianceReport] = useState<SionVarianceReport>({
     generatedAt: new Date().toISOString(),
-    generatedBy: 'Rajesh Sharma (Senior Manager)',
+    generatedBy: 'Girman Thapa (Senior Manager)',
     summary: {
       totalRecordsAnalyzed: 0,
       normalVarianceCount: 0,
@@ -92,7 +92,7 @@ export const ReportsPage: React.FC = () => {
 
   const [auditReport, setAuditReport] = useState<AuditTrailReport>({
     generatedAt: new Date().toISOString(),
-    generatedBy: 'Rajesh Sharma (Senior Manager)',
+    generatedBy: 'Girman Thapa (Senior Manager)',
     summary: {
       totalRecords: 0,
       createCount: 0,
@@ -267,7 +267,7 @@ export const ReportsPage: React.FC = () => {
 
     setExpiryReport({
       generatedAt: new Date().toISOString(),
-      generatedBy: 'Rajesh Sharma (Senior Manager)',
+      generatedBy: 'Girman Thapa (Senior Manager)',
       summary: {
         totalLicences,
         expiringWithin30Days,
@@ -377,7 +377,7 @@ export const ReportsPage: React.FC = () => {
 
     setUtilizationReport({
       generatedAt: new Date().toISOString(),
-      generatedBy: 'Rajesh Sharma (Senior Manager)',
+      generatedBy: 'Girman Thapa (Senior Manager)',
       summary: {
         totalAuthorizedFobInr: totalAuth,
         totalUtilizedFobInr: totalUtil,
@@ -421,7 +421,7 @@ export const ReportsPage: React.FC = () => {
 
     setVarianceReport({
       generatedAt: new Date().toISOString(),
-      generatedBy: 'Rajesh Sharma (Senior Manager)',
+      generatedBy: 'Girman Thapa (Senior Manager)',
       summary: {
         totalRecordsAnalyzed: items.length,
         normalVarianceCount: items.filter(i => i.statusIndicator === 'Normal').length,
@@ -443,7 +443,7 @@ export const ReportsPage: React.FC = () => {
       recordRef: l.licenceNumber,
       newValues: { licenceNumber: l.licenceNumber, fileNumber: l.fileNumber },
       userId: 'usr-01',
-      userName: 'Rajesh Sharma',
+      userName: 'Girman Thapa',
       userRole: 'Senior Export Manager',
       ipAddress: '192.168.1.45',
       status: 'success',
@@ -453,7 +453,7 @@ export const ReportsPage: React.FC = () => {
 
     setAuditReport({
       generatedAt: new Date().toISOString(),
-      generatedBy: 'Rajesh Sharma (Senior Manager)',
+      generatedBy: 'Girman Thapa (Senior Manager)',
       summary: {
         totalRecords: items.length,
         createCount: items.length,
